@@ -1,0 +1,560 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Base (users, accounts, ledger)
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  accounts        Account[]
+  categories      Category[]
+  transactions    Transaction[]
+  budgetItems     BudgetItem[]
+  cards           Card[]
+  purchases       Purchase[]
+  invoices        Invoice[]
+  scenarios       Scenario[]
+  savingsGoals    SavingsGoal[]
+  reserveLoans    ReserveLoan[]
+  recurringTransactions RecurringTransaction[]
+  debts           Debt[]
+
+  @@map("users")
+}
+
+enum AccountType {
+  checking
+  cash
+  savings_reserve
+  investment
+}
+
+model Account {
+  id              String      @id @default(uuid())
+  userId          String      @map("user_id")
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name            String
+  type            AccountType
+  initialBalance  Decimal     @default(0) @map("initial_balance") @db.Decimal(14, 2)
+  isArchived      Boolean     @default(false) @map("is_archived")
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+
+  balanceSnapshots         AccountBalanceSnapshot[]
+  transactionsAsPrimary    Transaction[]             @relation("TransactionAccount")
+  transactionsAsCounterpart Transaction[]            @relation("TransactionCounterpartAccount")
+  defaultForCards          Card[]
+  invoicePayments          InvoicePayment[]
+  scenarioTransactionsAsPrimary     ScenarioTransaction[]     @relation("ScenarioTransactionAccount")
+  scenarioTransactionsAsCounterpart ScenarioTransaction[]     @relation("ScenarioTransactionCounterpartAccount")
+  scenarioInvoicePayments          ScenarioInvoicePayment[]
+  reserveLoansAsReserve     ReserveLoan[] @relation("ReserveLoanReserveAccount")
+  reserveLoansAsDestination ReserveLoan[] @relation("ReserveLoanDestinationAccount")
+  recurringTransactionsAsPrimary    RecurringTransaction[] @relation("RecurringTransactionAccount")
+  recurringTransactionsAsCounterpart RecurringTransaction[] @relation("RecurringTransactionCounterpartAccount")
+  debtPayments    DebtPayment[]
+
+  @@map("accounts")
+}
+
+model AccountBalanceSnapshot {
+  id           String   @id @default(uuid())
+  accountId    String   @map("account_id")
+  account      Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  snapshotDate DateTime @map("snapshot_date") @db.Date
+  balance      Decimal  @db.Decimal(14, 2)
+  source       String   @default("manual")
+  note         String?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([accountId, snapshotDate])
+  @@map("account_balance_snapshots")
+}
+
+model Category {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  color     String
+  icon      String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  transactions         Transaction[]
+  budgetItems          BudgetItem[]
+  purchases            Purchase[]
+  scenarioTransactions ScenarioTransaction[]
+  scenarioPurchases    ScenarioPurchase[]
+  scenarioBudgetItems  ScenarioBudgetItem[]
+  recurringTransactions RecurringTransaction[]
+
+  @@map("categories")
+}
+
+enum TransactionType {
+  entrada
+  saida
+  diario
+  economia
+}
+
+model Transaction {
+  id                     String                @id @default(uuid())
+  userId                 String                @map("user_id")
+  user                   User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountId              String                @map("account_id")
+  account                Account               @relation("TransactionAccount", fields: [accountId], references: [id], onDelete: Cascade)
+  counterpartAccountId   String?               @map("counterpart_account_id")
+  counterpartAccount     Account?              @relation("TransactionCounterpartAccount", fields: [counterpartAccountId], references: [id])
+  type                   TransactionType
+  amount                 Decimal               @db.Decimal(14, 2)
+  categoryId             String?               @map("category_id")
+  category               Category?             @relation(fields: [categoryId], references: [id])
+  description            String?
+  date                   DateTime              @db.Date
+  recurringTransactionId String?               @map("recurring_transaction_id")
+  recurringTransaction   RecurringTransaction? @relation(fields: [recurringTransactionId], references: [id], onDelete: Cascade)
+  occurrenceIndex        Int?                  @map("occurrence_index")
+  createdAt              DateTime              @default(now()) @map("created_at")
+  updatedAt              DateTime              @updatedAt @map("updated_at")
+
+  @@map("transactions")
+}
+
+enum RecurringTransactionStatus {
+  active
+  cancelled
+}
+
+enum RecurrenceInterval {
+  daily
+  weekly
+  biweekly
+  monthly
+  annual
+}
+
+/// The template for a recurring lançamento — every actual occurrence is a
+/// normal `Transaction` row tagged with `recurringTransactionId`/
+/// `occurrenceIndex`, generated eagerly at creation time (no cron in this
+/// project). "Para sempre" just means a long bounded window (see
+/// recurring-transactions.service.ts) rather than true open-endedness.
+model RecurringTransaction {
+  id                   String                     @id @default(uuid())
+  userId               String                     @map("user_id")
+  user                 User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountId            String                     @map("account_id")
+  account              Account                    @relation("RecurringTransactionAccount", fields: [accountId], references: [id], onDelete: Cascade)
+  counterpartAccountId String?                    @map("counterpart_account_id")
+  counterpartAccount   Account?                   @relation("RecurringTransactionCounterpartAccount", fields: [counterpartAccountId], references: [id])
+  type                 TransactionType
+  amount               Decimal                    @db.Decimal(14, 2)
+  categoryId           String?                    @map("category_id")
+  category             Category?                  @relation(fields: [categoryId], references: [id])
+  description          String?
+  startDate            DateTime                   @map("start_date") @db.Date
+  interval             RecurrenceInterval         @default(monthly)
+  occurrenceCount      Int                        @map("occurrence_count")
+  isOpenEnded          Boolean                    @default(false) @map("is_open_ended")
+  status               RecurringTransactionStatus @default(active)
+  createdAt            DateTime                   @default(now()) @map("created_at")
+  updatedAt            DateTime                   @updatedAt @map("updated_at")
+
+  transactions Transaction[]
+
+  @@map("recurring_transactions")
+}
+
+// ---------------------------------------------------------------------------
+// Debts — money owed to a third party (bank), not between the user's own
+// accounts (see ReserveLoan for that). No interest engine here: the bank's
+// own fees/juros aren't a formula this app controls, so the user updates
+// `currentBalance` directly when the bank applies something new.
+// ---------------------------------------------------------------------------
+
+enum DebtType {
+  consignado
+  emprestimo_pessoal
+  cartao_vencido
+  outro
+}
+
+enum DebtStatus {
+  em_dia
+  vencida
+  negociada
+  paga
+}
+
+model Debt {
+  id                String     @id @default(uuid())
+  userId            String     @map("user_id")
+  user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  creditor          String
+  type              DebtType
+  status            DebtStatus @default(em_dia)
+  originalAmount    Decimal?   @map("original_amount") @db.Decimal(14, 2)
+  currentBalance    Decimal    @map("current_balance") @db.Decimal(14, 2)
+  installmentAmount Decimal?   @map("installment_amount") @db.Decimal(14, 2)
+  installmentDueDay Int?       @map("installment_due_day")
+  installmentsTotal Int?       @map("installments_total")
+  installmentsPaid  Int        @default(0) @map("installments_paid")
+  notes             String?
+  createdAt         DateTime   @default(now()) @map("created_at")
+  updatedAt         DateTime   @updatedAt @map("updated_at")
+
+  payments DebtPayment[]
+
+  @@map("debts")
+}
+
+model DebtPayment {
+  id            String   @id @default(uuid())
+  debtId        String   @map("debt_id")
+  debt          Debt     @relation(fields: [debtId], references: [id], onDelete: Cascade)
+  accountId     String   @map("account_id")
+  account       Account  @relation(fields: [accountId], references: [id])
+  paymentDate   DateTime @map("payment_date") @db.Date
+  amount        Decimal  @db.Decimal(14, 2)
+  balanceAfter  Decimal  @map("balance_after") @db.Decimal(14, 2)
+  notes         String?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@map("debt_payments")
+}
+
+model BudgetItem {
+  id         String    @id @default(uuid())
+  userId     String    @map("user_id")
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  amount     Decimal   @db.Decimal(14, 2)
+  categoryId String?   @map("category_id")
+  category   Category? @relation(fields: [categoryId], references: [id])
+  active     Boolean   @default(true)
+  startsOn   DateTime? @map("starts_on") @db.Date
+  endsOn     DateTime? @map("ends_on") @db.Date
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  @@map("budget_items")
+}
+
+// ---------------------------------------------------------------------------
+// Cards, purchases, installments, invoices, invoice payments (RF-11 / RF-12)
+// ---------------------------------------------------------------------------
+
+model Card {
+  id                      String   @id @default(uuid())
+  userId                  String   @map("user_id")
+  user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name                    String
+  brand                   String?
+  creditLimit             Decimal  @map("credit_limit") @db.Decimal(14, 2)
+  closingDay              Int      @map("closing_day")
+  dueDay                  Int      @map("due_day")
+  defaultPaymentAccountId String   @map("default_payment_account_id")
+  defaultPaymentAccount   Account  @relation(fields: [defaultPaymentAccountId], references: [id])
+  isArchived              Boolean  @default(false) @map("is_archived")
+  createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
+
+  purchases         Purchase[]
+  invoices          Invoice[]
+  scenarioPurchases ScenarioPurchase[]
+  scenarioInstallments     ScenarioInstallment[]
+  scenarioInvoicePayments  ScenarioInvoicePayment[]
+
+  @@map("cards")
+}
+
+model Purchase {
+  id                 String       @id @default(uuid())
+  userId             String       @map("user_id")
+  user               User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cardId             String       @map("card_id")
+  card               Card         @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  purchaseDate       DateTime     @map("purchase_date") @db.Date
+  description        String
+  amount             Decimal      @db.Decimal(14, 2)
+  categoryId         String?      @map("category_id")
+  category           Category?    @relation(fields: [categoryId], references: [id])
+  installmentsCount  Int          @default(1) @map("installments_count")
+  knownCharges       Decimal      @default(0) @map("known_charges") @db.Decimal(14, 2)
+  invoiceOverrideId  String?      @map("invoice_override_id")
+  invoiceOverride    Invoice?     @relation("PurchaseInvoiceOverride", fields: [invoiceOverrideId], references: [id])
+  createdAt          DateTime     @default(now()) @map("created_at")
+  updatedAt          DateTime     @updatedAt @map("updated_at")
+
+  installments Installment[]
+
+  @@map("purchases")
+}
+
+enum InstallmentStatus {
+  pending
+  invoiced
+  paid
+}
+
+model Installment {
+  id         String            @id @default(uuid())
+  purchaseId String            @map("purchase_id")
+  purchase   Purchase          @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  sequence   Int
+  amount     Decimal           @db.Decimal(14, 2)
+  invoiceId  String            @map("invoice_id")
+  invoice    Invoice           @relation(fields: [invoiceId], references: [id])
+  dueDate    DateTime          @map("due_date") @db.Date
+  status     InstallmentStatus @default(pending)
+
+  @@unique([purchaseId, sequence])
+  @@map("installments")
+}
+
+enum InvoiceStatus {
+  open
+  closed
+  paid
+  partially_paid
+}
+
+model Invoice {
+  id          String        @id @default(uuid())
+  cardId      String        @map("card_id")
+  card        Card          @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  userId      String        @map("user_id")
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  periodYear  Int           @map("period_year")
+  periodMonth Int           @map("period_month")
+  closingDate DateTime      @map("closing_date") @db.Date
+  dueDate     DateTime      @map("due_date") @db.Date
+  status      InvoiceStatus @default(open)
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+
+  installments         Installment[]
+  payments             InvoicePayment[]
+  purchaseOverrides    Purchase[]       @relation("PurchaseInvoiceOverride")
+  scenarioInstallments     ScenarioInstallment[]
+  scenarioInvoicePayments ScenarioInvoicePayment[]
+
+  @@unique([cardId, periodYear, periodMonth])
+  @@map("invoices")
+}
+
+model InvoicePayment {
+  id              String   @id @default(uuid())
+  invoiceId       String   @map("invoice_id")
+  invoice         Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  accountId       String   @map("account_id")
+  account         Account  @relation(fields: [accountId], references: [id])
+  paymentDate     DateTime @map("payment_date") @db.Date
+  amount          Decimal  @db.Decimal(14, 2)
+  interestAmount  Decimal  @default(0) @map("interest_amount") @db.Decimal(14, 2)
+  notes           String?
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("invoice_payments")
+}
+
+// ---------------------------------------------------------------------------
+// Reserve loans — borrowing from a "savings_reserve" account back into
+// another account, with simple monthly interest. Deliberately separate from
+// Transaction/"economia": reports and savings-goal math already filter on
+// type: "economia" to mean actual savings, and a loan is debt, not savings.
+// ---------------------------------------------------------------------------
+
+enum ReserveLoanStatus {
+  active
+  settled
+}
+
+model ReserveLoan {
+  id                   String            @id @default(uuid())
+  userId               String            @map("user_id")
+  user                 User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reserveAccountId     String            @map("reserve_account_id")
+  reserveAccount       Account           @relation("ReserveLoanReserveAccount", fields: [reserveAccountId], references: [id])
+  destinationAccountId String            @map("destination_account_id")
+  destinationAccount   Account           @relation("ReserveLoanDestinationAccount", fields: [destinationAccountId], references: [id])
+  principal            Decimal           @db.Decimal(14, 2)
+  borrowDate           DateTime          @map("borrow_date") @db.Date
+  monthlyInterestRate  Decimal           @default(10) @map("monthly_interest_rate") @db.Decimal(5, 2)
+  status               ReserveLoanStatus @default(active)
+  description          String?
+  createdAt            DateTime          @default(now()) @map("created_at")
+  updatedAt            DateTime          @updatedAt @map("updated_at")
+
+  repayments ReserveLoanRepayment[]
+
+  @@map("reserve_loans")
+}
+
+model ReserveLoanRepayment {
+  id                        String      @id @default(uuid())
+  loanId                    String      @map("loan_id")
+  loan                      ReserveLoan @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  repaymentDate             DateTime    @map("repayment_date") @db.Date
+  amount                    Decimal     @db.Decimal(14, 2)
+  interestPortion           Decimal     @map("interest_portion") @db.Decimal(14, 2)
+  principalPortion          Decimal     @map("principal_portion") @db.Decimal(14, 2)
+  outstandingPrincipalAfter Decimal     @map("outstanding_principal_after") @db.Decimal(14, 2)
+  createdAt                 DateTime    @default(now()) @map("created_at")
+
+  @@map("reserve_loan_repayments")
+}
+
+// ---------------------------------------------------------------------------
+// Simulation (RF-13) — shadow tables, isolated from real data
+// ---------------------------------------------------------------------------
+
+enum ScenarioStatus {
+  draft
+  confirmed
+  discarded
+}
+
+model Scenario {
+  id               String         @id @default(uuid())
+  userId           String         @map("user_id")
+  user             User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name             String
+  description      String?
+  status           ScenarioStatus @default(draft)
+  baseSnapshotDate DateTime       @map("base_snapshot_date") @db.Date
+  createdAt        DateTime       @default(now()) @map("created_at")
+  updatedAt        DateTime       @updatedAt @map("updated_at")
+  confirmedAt      DateTime?      @map("confirmed_at")
+  discardedAt      DateTime?      @map("discarded_at")
+
+  transactions    ScenarioTransaction[]
+  purchases       ScenarioPurchase[]
+  invoicePayments ScenarioInvoicePayment[]
+  budgetItems     ScenarioBudgetItem[]
+
+  @@map("scenarios")
+}
+
+model ScenarioTransaction {
+  id                   String           @id @default(uuid())
+  scenarioId           String           @map("scenario_id")
+  scenario             Scenario         @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+  accountId            String           @map("account_id")
+  account              Account          @relation("ScenarioTransactionAccount", fields: [accountId], references: [id])
+  counterpartAccountId String?          @map("counterpart_account_id")
+  counterpartAccount   Account?         @relation("ScenarioTransactionCounterpartAccount", fields: [counterpartAccountId], references: [id])
+  type                 TransactionType
+  amount               Decimal          @db.Decimal(14, 2)
+  categoryId           String?          @map("category_id")
+  category             Category?        @relation(fields: [categoryId], references: [id])
+  description          String?
+  date                 DateTime         @db.Date
+
+  @@map("scenario_transactions")
+}
+
+model ScenarioPurchase {
+  id                String    @id @default(uuid())
+  scenarioId        String    @map("scenario_id")
+  scenario          Scenario  @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+  cardId            String    @map("card_id")
+  card              Card      @relation(fields: [cardId], references: [id])
+  purchaseDate      DateTime  @map("purchase_date") @db.Date
+  description       String
+  amount            Decimal   @db.Decimal(14, 2)
+  categoryId        String?   @map("category_id")
+  category          Category? @relation(fields: [categoryId], references: [id])
+  installmentsCount Int       @default(1) @map("installments_count")
+  knownCharges      Decimal   @default(0) @map("known_charges") @db.Decimal(14, 2)
+
+  installments ScenarioInstallment[]
+
+  @@map("scenario_purchases")
+}
+
+model ScenarioInstallment {
+  id                 String            @id @default(uuid())
+  scenarioPurchaseId String            @map("scenario_purchase_id")
+  scenarioPurchase   ScenarioPurchase  @relation(fields: [scenarioPurchaseId], references: [id], onDelete: Cascade)
+  sequence           Int
+  amount             Decimal           @db.Decimal(14, 2)
+  cardId             String            @map("card_id")
+  card               Card              @relation(fields: [cardId], references: [id])
+  periodYear         Int               @map("period_year")
+  periodMonth        Int               @map("period_month")
+  dueDate            DateTime          @map("due_date") @db.Date
+  realInvoiceId      String?           @map("real_invoice_id")
+  realInvoice        Invoice?          @relation(fields: [realInvoiceId], references: [id])
+
+  @@unique([scenarioPurchaseId, sequence])
+  @@map("scenario_installments")
+}
+
+model ScenarioInvoicePayment {
+  id             String   @id @default(uuid())
+  scenarioId     String   @map("scenario_id")
+  scenario       Scenario @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+  accountId      String   @map("account_id")
+  account        Account  @relation(fields: [accountId], references: [id])
+  realInvoiceId  String?  @map("real_invoice_id")
+  realInvoice    Invoice? @relation(fields: [realInvoiceId], references: [id])
+  cardId         String?  @map("card_id")
+  card           Card?    @relation(fields: [cardId], references: [id])
+  periodYear     Int?     @map("period_year")
+  periodMonth    Int?     @map("period_month")
+  paymentDate    DateTime @map("payment_date") @db.Date
+  amount         Decimal  @db.Decimal(14, 2)
+  interestAmount Decimal  @default(0) @map("interest_amount") @db.Decimal(14, 2)
+
+  @@map("scenario_invoice_payments")
+}
+
+model ScenarioBudgetItem {
+  id         String    @id @default(uuid())
+  scenarioId String    @map("scenario_id")
+  scenario   Scenario  @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+  name       String
+  amount     Decimal   @db.Decimal(14, 2)
+  categoryId String?   @map("category_id")
+  category   Category? @relation(fields: [categoryId], references: [id])
+
+  @@map("scenario_budget_items")
+}
+
+// ---------------------------------------------------------------------------
+// Savings goals (RF-14)
+// ---------------------------------------------------------------------------
+
+enum SavingsGoalPeriodType {
+  monthly
+  annual
+}
+
+model SavingsGoal {
+  id               String                @id @default(uuid())
+  userId           String                @map("user_id")
+  user             User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  periodType       SavingsGoalPeriodType @map("period_type")
+  periodYear       Int                   @map("period_year")
+  periodMonth      Int?                  @map("period_month")
+  targetPercent    Decimal               @map("target_percent") @db.Decimal(5, 2)
+  methodologyNote  String?               @map("methodology_note")
+  createdAt        DateTime              @default(now()) @map("created_at")
+  updatedAt        DateTime              @updatedAt @map("updated_at")
+
+  @@unique([userId, periodType, periodYear, periodMonth])
+  @@map("savings_goals")
+}

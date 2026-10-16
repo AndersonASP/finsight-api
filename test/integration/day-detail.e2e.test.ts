@@ -1,0 +1,95 @@
+import request from "supertest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { app } from "../../src/app.js";
+import { prisma } from "../../src/core/db/prisma.js";
+import { cleanupDatabase, createTestUser } from "./helpers.js";
+
+describe("day detail (drill-down from a day's saldo)", () => {
+  afterEach(async () => {
+    await cleanupDatabase();
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  it("lists a regular transaction with its tag, and an installment with its parcela count", async () => {
+    const { token } = await createTestUser();
+    const account = await request(app)
+      .post("/accounts")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ name: "Conta", type: "checking" })
+      .expect(201);
+    const category = await request(app)
+      .post("/categories")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ name: "Carro", color: "#D2531E" })
+      .expect(201);
+    const card = await request(app)
+      .post("/cards")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        name: "Cartão",
+        creditLimit: "5000.00",
+        closingDay: 28,
+        dueDay: 2,
+        defaultPaymentAccountId: account.body.id,
+      })
+      .expect(201);
+
+    await request(app)
+      .post("/transactions")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        accountId: account.body.id,
+        type: "saida",
+        amount: "150.00",
+        date: "2026-09-02",
+        categoryId: category.body.id,
+        description: "Aluguel",
+      })
+      .expect(201);
+
+    // Purchase on 2026-08-25 closing 28 -> first installment due 2026-09-02 (dueDay=2, next month since dueDay<=closingDay).
+    await request(app)
+      .post("/purchases")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        cardId: card.body.id,
+        purchaseDate: "2026-08-25",
+        description: "Parcela do carro",
+        amount: "1107.60",
+        categoryId: category.body.id,
+        installmentsCount: 17,
+      })
+      .expect(201);
+
+    const res = await request(app)
+      .get("/reports/day-detail?date=2026-09-02")
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+
+    expect(res.body).toHaveLength(2);
+
+    const transactionItem = res.body.find((i: { type: string }) => i.type === "saida");
+    expect(transactionItem.description).toBe("Aluguel");
+    expect(transactionItem.amount).toBe("150.00");
+    expect(transactionItem.categoryName).toBe("Carro");
+    expect(transactionItem.installment).toBeNull();
+
+    const installmentItem = res.body.find((i: { type: string }) => i.type === "cartao");
+    expect(installmentItem.description).toBe("Parcela do carro");
+    expect(installmentItem.amount).toBe("65.15"); // 1107.60 / 17, rounded down (remainder lands on the last installment)
+    expect(installmentItem.categoryName).toBe("Carro");
+    expect(installmentItem.installment).toEqual({ sequence: 1, count: 17 });
+  });
+
+  it("returns an empty list for a day with no activity", async () => {
+    const { token } = await createTestUser();
+    const res = await request(app)
+      .get("/reports/day-detail?date=2026-01-01")
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+    expect(res.body).toEqual([]);
+  });
+});
