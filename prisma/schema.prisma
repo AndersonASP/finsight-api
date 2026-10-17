@@ -31,6 +31,7 @@ model User {
   debts                  Debt[]
   recurringCardPurchases RecurringCardPurchase[]
   refreshTokens          RefreshToken[]
+  walletCardMappings     WalletCardMapping[]
 
   @@map("users")
 }
@@ -79,6 +80,7 @@ model Account {
   reserveLoansAsDestination          ReserveLoan[]            @relation("ReserveLoanDestinationAccount")
   recurringTransactionsAsPrimary     RecurringTransaction[]   @relation("RecurringTransactionAccount")
   recurringTransactionsAsCounterpart RecurringTransaction[]   @relation("RecurringTransactionCounterpartAccount")
+  walletCardMappings                 WalletCardMapping[]
   debtPayments                       DebtPayment[]
 
   @@map("accounts")
@@ -292,6 +294,7 @@ model Card {
   invoices               Invoice[]
   recurringCardPurchases RecurringCardPurchase[]
   scenarioPurchases      ScenarioPurchase[]
+  walletCardMappings     WalletCardMapping[]
   scenarioInstallments   ScenarioInstallment[]
 
   @@map("cards")
@@ -565,4 +568,28 @@ model SavingsGoal {
 
   @@unique([userId, periodType, periodYear, periodMonth])
   @@map("savings_goals")
+}
+
+// ---------------------------------------------------------------------------
+// Quick entries (Apple Pay / Shortcuts)
+// ---------------------------------------------------------------------------
+
+// Which FinSight card (crédito) or account (débito) a card in the iPhone's
+// Wallet stands for, so an Apple Pay automation can log the purchase in the
+// right place. Exactly one of cardId / accountId is set.
+model WalletCardMapping {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Normalized (trimmed, lowercase) name as the Wallet reports it.
+  walletName String   @map("wallet_name")
+  cardId     String?  @map("card_id")
+  card       Card?    @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  accountId  String?  @map("account_id")
+  account    Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, walletName])
+  @@map("wallet_card_mappings")
 }

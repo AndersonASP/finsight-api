@@ -14,6 +14,7 @@ import { categoriesRouter } from "./modules/categories/categories.routes.js";
 import { installmentsRouter, invoicesRouter } from "./modules/invoices/invoices.routes.js";
 import { debtsRouter } from "./modules/debts/debts.routes.js";
 import { purchasesRouter } from "./modules/purchases/purchases.routes.js";
+import { quickEntriesRouter } from "./modules/quick-entries/quick-entries.routes.js";
 import { recurringCardPurchasesRouter } from "./modules/recurring-card-purchases/recurring-card-purchases.routes.js";
 import { recurringTransactionsRouter } from "./modules/recurring-transactions/recurring-transactions.routes.js";
 import { reportsRouter } from "./modules/reports/reports.routes.js";
@@ -56,6 +57,7 @@ app.use("/recurring-transactions", authGuard, recurringTransactionsRouter);
 app.use("/recurring-card-purchases", authGuard, recurringCardPurchasesRouter);
 app.use("/debts", authGuard, debtsRouter);
 app.use("/bills", authGuard, billsRouter);
+app.use("/quick-entries", authGuard, quickEntriesRouter);
 app.use("/reset", authGuard, resetRouter);
 
 app.use(errorHandler);
