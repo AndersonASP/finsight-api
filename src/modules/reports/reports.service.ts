@@ -421,6 +421,8 @@ export interface DayDetailItem {
   categoryColor: string | null;
   installment: { sequence: number; count: number } | null;
   recurring: { seriesId: string; occurrenceIndex: number } | null;
+  /** The visual "pago" check — only for recurring saídas (the bills checklist), null otherwise. */
+  paid: boolean | null;
 }
 
 /**
@@ -461,6 +463,7 @@ export async function getDayDetail(userId: string, date: Date, toInclusive: Date
         t.recurringTransactionId != null && t.occurrenceIndex != null
           ? { seriesId: t.recurringTransactionId, occurrenceIndex: t.occurrenceIndex }
           : null,
+      paid: t.type === "saida" && t.recurringTransactionId != null ? t.paidAt !== null : null,
     });
   }
 
@@ -484,6 +487,7 @@ export async function getDayDetail(userId: string, date: Date, toInclusive: Date
         purchase.recurringCardPurchaseId != null && purchase.occurrenceIndex != null
           ? { seriesId: purchase.recurringCardPurchaseId, occurrenceIndex: purchase.occurrenceIndex }
           : null,
+      paid: null,
     });
   }
 
