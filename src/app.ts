@@ -3,7 +3,9 @@ import express from "express";
 import helmet from "helmet";
 import "./core/money/decimal-json.js";
 import { env } from "./core/config/env.js";
-import { authGuard } from "./core/http/auth-guard.js";
+import { asyncHandler } from "./core/http/async-handler.js";
+import { authGuard, requireUserId } from "./core/http/auth-guard.js";
+import { getDataVersion, trackDataChanges } from "./core/http/data-version.js";
 import { errorHandler } from "./core/http/error-handler.js";
 import { accountsRouter } from "./modules/accounts/accounts.routes.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
@@ -43,26 +45,37 @@ app.get("/health", (_req, res) => {
 
 app.use("/auth", authRouter);
 
-app.use("/accounts", authGuard, accountsRouter);
-app.use("/transactions", authGuard, transactionsRouter);
-app.use("/categories", authGuard, categoriesRouter);
-app.use("/budget-items", authGuard, budgetRouter);
-app.use("/reports", authGuard, reportsRouter);
-app.use("/cards", authGuard, cardsRouter);
-app.use("/purchases", authGuard, purchasesRouter);
-app.use("/invoices", authGuard, invoicesRouter);
-app.use("/installments", authGuard, installmentsRouter);
-app.use("/scenarios", authGuard, scenariosRouter);
-app.use("/savings-goals", authGuard, savingsGoalsRouter);
-app.use("/reserve-loans", authGuard, reserveLoansRouter);
-app.use("/recurring-transactions", authGuard, recurringTransactionsRouter);
-app.use("/recurring-card-purchases", authGuard, recurringCardPurchasesRouter);
-app.use("/debts", authGuard, debtsRouter);
-app.use("/bills", authGuard, billsRouter);
-app.use("/quick-entries", authGuard, quickEntriesRouter);
-app.use("/wealth", authGuard, wealthRouter);
-app.use("/assets", authGuard, assetsRouter);
-app.use("/insights", authGuard, insightsRouter);
-app.use("/reset", authGuard, resetRouter);
+// Every authenticated route: writes bump the user's data version.
+const authed = [authGuard, trackDataChanges];
+
+app.get(
+  "/sync/version",
+  authGuard,
+  asyncHandler(async (req, res) => {
+    res.json(await getDataVersion(requireUserId(req)));
+  })
+);
+
+app.use("/accounts", ...authed, accountsRouter);
+app.use("/transactions", ...authed, transactionsRouter);
+app.use("/categories", ...authed, categoriesRouter);
+app.use("/budget-items", ...authed, budgetRouter);
+app.use("/reports", ...authed, reportsRouter);
+app.use("/cards", ...authed, cardsRouter);
+app.use("/purchases", ...authed, purchasesRouter);
+app.use("/invoices", ...authed, invoicesRouter);
+app.use("/installments", ...authed, installmentsRouter);
+app.use("/scenarios", ...authed, scenariosRouter);
+app.use("/savings-goals", ...authed, savingsGoalsRouter);
+app.use("/reserve-loans", ...authed, reserveLoansRouter);
+app.use("/recurring-transactions", ...authed, recurringTransactionsRouter);
+app.use("/recurring-card-purchases", ...authed, recurringCardPurchasesRouter);
+app.use("/debts", ...authed, debtsRouter);
+app.use("/bills", ...authed, billsRouter);
+app.use("/quick-entries", ...authed, quickEntriesRouter);
+app.use("/wealth", ...authed, wealthRouter);
+app.use("/assets", ...authed, assetsRouter);
+app.use("/insights", ...authed, insightsRouter);
+app.use("/reset", ...authed, resetRouter);
 
 app.use(errorHandler);
