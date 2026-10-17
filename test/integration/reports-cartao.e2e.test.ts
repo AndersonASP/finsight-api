@@ -13,7 +13,7 @@ describe("reports include card purchases without duplicating as a bank expense",
     await prisma.$disconnect();
   });
 
-  it("a card purchase shows in the cartao column but does not move saldo", async () => {
+  it("a card purchase shows in the cartao column on the invoice due date, the day it leaves the saldo", async () => {
     const { token } = await createTestUser();
     const accountRes = await request(app)
       .post("/accounts")
@@ -32,6 +32,7 @@ describe("reports include card purchases without duplicating as a bank expense",
       })
       .expect(201);
 
+    // Bought on the 5th, before the closing day (10): this month's invoice, due on the 17th.
     const { year, month } = futureYearMonth(1);
     await request(app)
       .post("/purchases")
@@ -44,8 +45,11 @@ describe("reports include card purchases without duplicating as a bank expense",
       .set("Authorization", `Bearer ${token}`)
       .expect(200);
     const day5 = dailyRes.body.find((d: { day: number }) => d.day === 5);
-    expect(day5.cartao).toBe("120.00");
-    expect(day5.saldo).toBe("1000.00"); // unaffected until the invoice's due date
+    const day17 = dailyRes.body.find((d: { day: number }) => d.day === 17);
+    expect(day5.cartao).toBe("0.00");
+    expect(day5.saldo).toBe("1000.00");
+    expect(day17.cartao).toBe("120.00");
+    expect(day17.saldo).toBe("880.00");
 
     const totalsRes = await request(app)
       .get(`/reports/monthly-totals?year=${year}&month=${month}`)
@@ -53,6 +57,39 @@ describe("reports include card purchases without duplicating as a bank expense",
       .expect(200);
     expect(totalsRes.body.cartao).toBe("120.00");
     expect(totalsRes.body.custoDeVida).toBe("120.00");
+  });
+
+  it("a purchase after the closing day shows on next month's due date, not in the purchase month", async () => {
+    const { token } = await createTestUser();
+    const auth = { Authorization: `Bearer ${token}` };
+    const accountId = (
+      await request(app).post("/accounts").set(auth).send({ name: "Conta", type: "checking", initialBalance: "1000.00" }).expect(201)
+    ).body.id;
+    // Like the user's cards: closes on the 13th, due on the 20th.
+    const cardId = (
+      await request(app).post("/cards").set(auth).send({ name: "IAS Itaú", closingDay: 13, dueDay: 20, defaultPaymentAccountId: accountId }).expect(201)
+    ).body.id;
+
+    const buy = futureYearMonth(1);
+    const pay = futureYearMonth(2);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    await request(app)
+      .post("/purchases")
+      .set(auth)
+      .send({ cardId, purchaseDate: `${buy.year}-${pad(buy.month)}-17`, description: "Compra", amount: "200.00" })
+      .expect(201);
+
+    const buyMonth = (await request(app).get(`/reports/daily-balance?year=${buy.year}&month=${buy.month}`).set(auth).expect(200)).body;
+    expect(buyMonth.every((d: { cartao: string }) => d.cartao === "0.00")).toBe(true);
+    const buyTotals = (await request(app).get(`/reports/monthly-totals?year=${buy.year}&month=${buy.month}`).set(auth).expect(200)).body;
+    expect(buyTotals.cartao).toBe("0.00");
+
+    const payMonth = (await request(app).get(`/reports/daily-balance?year=${pay.year}&month=${pay.month}`).set(auth).expect(200)).body;
+    const due = payMonth.find((d: { day: number }) => d.day === 20);
+    expect(due.cartao).toBe("200.00");
+    expect(due.saldo).toBe("800.00");
+    const payTotals = (await request(app).get(`/reports/monthly-totals?year=${pay.year}&month=${pay.month}`).set(auth).expect(200)).body;
+    expect(payTotals.cartao).toBe("200.00");
   });
 
   it("the invoice debits the account in full exactly on the installment's due date, with no manual payment step", async () => {

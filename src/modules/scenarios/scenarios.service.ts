@@ -181,9 +181,10 @@ export async function getScenarioDayDetail(
       where: { scenarioId, date: { gte: date, lt: nextDay } },
       include: { category: true },
     }),
-    prisma.scenarioPurchase.findMany({
-      where: { scenarioId, purchaseDate: { gte: date, lt: nextDay } },
-      include: { category: true },
+    // Card spending on the invoice due date, like the real day detail.
+    prisma.scenarioInstallment.findMany({
+      where: { scenarioPurchase: { scenarioId }, dueDate: { gte: date, lt: nextDay } },
+      include: { scenarioPurchase: { include: { category: true } } },
     }),
   ]);
 
@@ -198,15 +199,16 @@ export async function getScenarioDayDetail(
       categoryName: t.category?.name ?? null,
       categoryColor: t.category?.color ?? null,
     })),
-    ...purchases.map((p) => ({
-      id: p.id,
+    ...purchases.map((installment) => ({
+      // The purchase's id: removing the shadow item removes the whole purchase.
+      id: installment.scenarioPurchase.id,
       kind: "purchase" as const,
       type: "cartao",
-      description: p.description,
-      date: p.purchaseDate.toISOString().slice(0, 10),
-      amount: new Prisma.Decimal(p.amount).toFixed(2),
-      categoryName: p.category?.name ?? null,
-      categoryColor: p.category?.color ?? null,
+      description: installment.scenarioPurchase.description,
+      date: installment.dueDate.toISOString().slice(0, 10),
+      amount: new Prisma.Decimal(installment.amount).toFixed(2),
+      categoryName: installment.scenarioPurchase.category?.name ?? null,
+      categoryColor: installment.scenarioPurchase.category?.color ?? null,
     })),
   ];
 

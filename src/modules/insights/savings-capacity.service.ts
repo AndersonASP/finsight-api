@@ -48,9 +48,10 @@ async function topOverspending(userId: string, year: number, month: number, elap
       where: { userId, type: "diario", categoryId: { not: null }, date: { gte: historyStart, lt: currentEnd } },
       include: { category: true },
     }),
-    prisma.purchase.findMany({
-      where: { userId, categoryId: { not: null }, purchaseDate: { gte: historyStart, lt: currentEnd } },
-      include: { category: true },
+    // Card spending by invoice due date, consistent with the month's totals.
+    prisma.installment.findMany({
+      where: { dueDate: { gte: historyStart, lt: currentEnd }, purchase: { userId, categoryId: { not: null } } },
+      select: { amount: true, dueDate: true, purchase: { select: { category: true } } },
     }),
   ]);
 
@@ -63,7 +64,7 @@ async function topOverspending(userId: string, year: number, month: number, elap
     byCategory.set(category.id, entry);
   };
   for (const t of transactions) add(t.category, t.date, t.amount);
-  for (const p of purchases) add(p.category, p.purchaseDate, p.amount);
+  for (const i of purchases) add(i.purchase.category, i.dueDate, i.amount);
 
   return [...byCategory.values()]
     .map((c) => {

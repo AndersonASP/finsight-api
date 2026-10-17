@@ -170,8 +170,10 @@ describe("scenarios / simulation (RF-13)", () => {
     const day17 = withScenario.body.find((d: { day: number }) => d.day === 17);
     expect(day5.saida).toBe("150.00"); // real + shadow
     expect(day5.saidaShadow).toBe(true);
-    expect(day6.cartao).toBe("300.00");
-    expect(day6.cartaoShadow).toBe(true);
+    // Card spending shows on the invoice due date (17), not the purchase day.
+    expect(day6.cartao).toBe("0.00");
+    expect(day17.cartao).toBe("300.00");
+    expect(day17.cartaoShadow).toBe(true);
     expect(day17.saldo).toBe("550.00"); // 1000 - 150 (saida) - 300 (installment due) = 550
   });
 

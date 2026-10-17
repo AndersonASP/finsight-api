@@ -3,15 +3,16 @@ import { prisma } from "../../core/db/prisma.js";
 import { AppError } from "../../core/http/errors.js";
 
 /**
- * Lazily flips `open` -> `closed` once the closing date has passed, instead of
- * relying on a scheduled job — status is always correct whenever read, never
- * stale between job runs.
+ * Status always follows the closing date, fixed lazily on read instead of by
+ * a scheduled job: `closed` once it has passed, `open` while it's still ahead
+ * (data from the removed "pagar fatura" flow could close a future invoice).
  */
 async function withUpToDateStatus<T extends { id: string; status: InvoiceStatus; closingDate: Date }>(
   invoice: T
 ): Promise<T> {
-  if (invoice.status === "open" && new Date() >= invoice.closingDate) {
-    const updated = await prisma.invoice.update({ where: { id: invoice.id }, data: { status: "closed" } });
+  const expected: InvoiceStatus = new Date() >= invoice.closingDate ? "closed" : "open";
+  if (invoice.status !== expected) {
+    const updated = await prisma.invoice.update({ where: { id: invoice.id }, data: { status: expected } });
     return { ...invoice, status: updated.status };
   }
   return invoice;

@@ -83,12 +83,30 @@ describe("insights: posso comprar? (simulação)", () => {
     expect(await rowCounts()).toEqual(before);
   });
 
-  it("counts the whole purchase against the purchase month's savings", async () => {
+  it("débito/Pix counts in full against the purchase month's savings", async () => {
     const { auth, accountId } = await setup("20000.00");
     await request(app).post("/transactions").set(auth).send({ accountId, type: "entrada", amount: "5000.00", date: day(5) }).expect(201);
     const res = (await simulate(auth, { amount: "1000.00", date: day(10) })).body;
-    const { antes, depois } = res.daParaGuardarNoMesDaCompra;
+    const { mes, antes, depois } = res.daParaGuardarNoPrimeiroVencimento;
+    expect(mes).toBe(`${year}-${pad(month)}`);
     expect(Number(antes) - Number(depois)).toBeCloseTo(1000);
+  });
+
+  it("a card purchase only weighs on the month of each due installment", async () => {
+    const { auth, accountId } = await setup("20000.00");
+    const next = futureYearMonth(2);
+    await request(app).post("/transactions").set(auth).send({ accountId, type: "entrada", amount: "5000.00", date: `${next.year}-${pad(next.month)}-02` }).expect(201);
+    const cardId = (
+      await request(app)
+        .post("/cards")
+        .set(auth)
+        .send({ name: "Nubank", closingDay: 1, dueDay: 8, defaultPaymentAccountId: accountId })
+        .expect(201)
+    ).body.id;
+    const res = (await simulate(auth, { amount: "1000.00", installments: 4, cardId, date: day(10) })).body;
+    const { mes, antes, depois } = res.daParaGuardarNoPrimeiroVencimento;
+    expect(mes).toBe(`${next.year}-${pad(next.month)}`);
+    expect(Number(antes) - Number(depois)).toBeCloseTo(250);
   });
 
   it("validates the input", async () => {

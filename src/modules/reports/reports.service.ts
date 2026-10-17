@@ -137,14 +137,6 @@ export async function getDailyBalance(
     },
   });
 
-  // Card purchases are the "despesa original" (RF-12): shown here at purchase
-  // time for the full amount, same as `diario`. They never move `saldo` on
-  // their own — only the automatic debit on each installment's due date
-  // (below) touches cash.
-  const purchases = await prisma.purchase.findMany({
-    where: { userId, purchaseDate: { gte: monthStart, lt: monthEnd } },
-  });
-
   // The bill debits automatically in full on each installment's *due date*
   // (see getAccountBalance) — no more manual invoice payment step.
   const installmentsDue = await prisma.installment.findMany({
@@ -208,22 +200,6 @@ export async function getDailyBalance(
   const diarioShadow = new Array<boolean>(numDays).fill(false);
   const economiaShadow = new Array<boolean>(numDays).fill(false);
   const cartaoShadow = new Array<boolean>(numDays).fill(false);
-
-  for (const p of purchases) {
-    const dayIndex = p.purchaseDate.getUTCDate() - 1;
-    columns[dayIndex].cartao = columns[dayIndex].cartao.plus(new Prisma.Decimal(p.amount));
-  }
-
-  if (scenarioId) {
-    const scenarioPurchases = await prisma.scenarioPurchase.findMany({
-      where: { scenarioId, purchaseDate: { gte: monthStart, lt: monthEnd } },
-    });
-    for (const p of scenarioPurchases) {
-      const dayIndex = p.purchaseDate.getUTCDate() - 1;
-      columns[dayIndex].cartao = columns[dayIndex].cartao.plus(new Prisma.Decimal(p.amount));
-      cartaoShadow[dayIndex] = true;
-    }
-  }
 
   for (const t of transactions) {
     const dayIndex = t.date.getUTCDate() - 1;
@@ -300,9 +276,14 @@ export async function getDailyBalance(
     }
   }
 
+  // Card spending shows on the invoice's due date — the day the bill is
+  // actually paid, in the cycle the purchase fell into (a purchase after the
+  // closing day lands on next month's due date) — and that's also the day
+  // it leaves the saldo.
   for (const installment of installmentsDue) {
     const dayIndex = installment.dueDate.getUTCDate() - 1;
     const amount = new Prisma.Decimal(installment.amount);
+    columns[dayIndex].cartao = columns[dayIndex].cartao.plus(amount);
     const payingAccountId = installment.purchase.card.defaultPaymentAccountId;
     if (accountId) {
       // Already scoped to this account's card(s) by the query above.
@@ -321,8 +302,10 @@ export async function getDailyBalance(
       include: { card: true },
     });
     for (const installment of scenarioInstallments) {
-      if (accountTypeById.get(installment.card.defaultPaymentAccountId) !== "checking") continue;
       const dayIndex = installment.dueDate.getUTCDate() - 1;
+      columns[dayIndex].cartao = columns[dayIndex].cartao.plus(new Prisma.Decimal(installment.amount));
+      cartaoShadow[dayIndex] = true;
+      if (accountTypeById.get(installment.card.defaultPaymentAccountId) !== "checking") continue;
       deltas[dayIndex] = deltas[dayIndex].minus(new Prisma.Decimal(installment.amount));
     }
   }
@@ -430,7 +413,7 @@ export interface DayDetailItem {
  * day" view, not the aggregate columns above. Regular transactions are dated
  * by `date`; card installments are dated by their own `dueDate` (when that
  * specific installment is billed), which is intentionally independent of the
- * `cartao` aggregate column (dated by purchase time, per RF-12).
+ * `cartao` aggregate column (both on the invoice due date).
  */
 export async function getDayDetail(userId: string, date: Date, toInclusive: Date = date): Promise<DayDetailItem[]> {
   const nextDay = new Date(toInclusive.getTime() + 24 * 60 * 60 * 1000);
@@ -516,8 +499,10 @@ export async function getMonthlyTotals(userId: string, year: number, month: numb
   const transactions = await prisma.transaction.findMany({
     where: { userId, date: { gte: monthStart, lt: monthEnd } },
   });
-  const purchases = await prisma.purchase.findMany({
-    where: { userId, purchaseDate: { gte: monthStart, lt: monthEnd } },
+  // Card spending counts in the month its invoice is due (see getDailyBalance).
+  const installmentsDue = await prisma.installment.findMany({
+    where: { purchase: { userId }, dueDate: { gte: monthStart, lt: monthEnd } },
+    select: { amount: true },
   });
 
   let entradas = ZERO;
@@ -533,8 +518,8 @@ export async function getMonthlyTotals(userId: string, year: number, month: numb
     else if (t.type === "diario") diario = diario.plus(amount);
     else if (t.type === "economia") economia = economia.plus(amount);
   }
-  for (const p of purchases) {
-    cartao = cartao.plus(new Prisma.Decimal(p.amount));
+  for (const installment of installmentsDue) {
+    cartao = cartao.plus(new Prisma.Decimal(installment.amount));
   }
 
   const performance = entradas.minus(saidas).minus(diario).minus(economia).minus(cartao);
@@ -572,7 +557,7 @@ export interface CategoryBreakdownItem {
 
 /**
  * Spend by category for one month, unioning `Transaction` (saida/diario/
- * economia) and `Purchase` — a plain lançamento and a card purchase with the
+ * economia) and card installments due that month — a plain lançamento and a card purchase with the
  * same tag must both count here, unlike categories.service.ts's
  * getCategoryTotal which only ever looked at Transaction.
  */
@@ -590,9 +575,10 @@ export async function getCategoryBreakdown(userId: string, year: number, month: 
       },
       include: { category: true },
     }),
-    prisma.purchase.findMany({
-      where: { userId, purchaseDate: { gte: monthStart, lt: monthEnd }, categoryId: { not: null } },
-      include: { category: true },
+    // Card spending by the invoice due date, like the cartão column/totals.
+    prisma.installment.findMany({
+      where: { dueDate: { gte: monthStart, lt: monthEnd }, purchase: { userId, categoryId: { not: null } } },
+      select: { amount: true, purchase: { select: { categoryId: true, category: true } } },
     }),
   ]);
 
@@ -603,10 +589,10 @@ export async function getCategoryBreakdown(userId: string, year: number, month: 
     existing.total = existing.total.plus(t.amount);
     totals.set(t.categoryId, existing);
   }
-  for (const p of purchases) {
+  for (const { amount, purchase: p } of purchases) {
     if (!p.categoryId || !p.category) continue;
     const existing = totals.get(p.categoryId) ?? { name: p.category.name, color: p.category.color, total: ZERO };
-    existing.total = existing.total.plus(p.amount);
+    existing.total = existing.total.plus(amount);
     totals.set(p.categoryId, existing);
   }
 

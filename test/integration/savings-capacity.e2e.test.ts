@@ -45,7 +45,8 @@ describe("insights: quanto dá para guardar", () => {
       await request(app)
         .post("/cards")
         .set(auth)
-        .send({ name: "Nubank", closingDay: 1, dueDay: 8, defaultPaymentAccountId: accountId })
+        // Closes on the 20th, due on the 25th: bought on the 12th, due this same month.
+        .send({ name: "Nubank", closingDay: 20, dueDay: 25, defaultPaymentAccountId: accountId })
         .expect(201)
     ).body.id;
     await request(app).post("/purchases").set(auth).send({ cardId, purchaseDate: day(12), description: "Mercado", amount: "300.00" }).expect(201);

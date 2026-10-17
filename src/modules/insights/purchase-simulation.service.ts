@@ -101,14 +101,16 @@ export async function simulatePurchase(userId: string, input: PurchaseSimulation
     });
   }
 
-  // "Dá para guardar" of the purchase month: the purchase counts in full in
-  // that month (the app's method — buying is spending, even in parcelas),
-  // and the safety ceiling uses the saldo with the purchase.
-  const purchaseMonth = months[0];
-  const capacity = await getSavingsCapacity(userId, input.date.getUTCFullYear(), input.date.getUTCMonth() + 1);
+  // "Dá para guardar" of the first month that pays something: card spending
+  // counts in the month each installment is due (débito/Pix, on the day), and
+  // the safety ceiling uses that month's saldo with the purchase.
+  const firstDue = cashOuts[0];
+  const firstDueMonth = months.find((mo) => mo.mes === iso(firstDue.date).slice(0, 7)) ?? months[0];
+  const dueInFirstMonth = new Prisma.Decimal(firstDueMonth.pagaNoMes);
+  const capacity = await getSavingsCapacity(userId, firstDue.date.getUTCFullYear(), firstDue.date.getUTCMonth() + 1);
   const folga = new Prisma.Decimal(capacity.folga);
-  const sobraDepois = new Prisma.Decimal(capacity.sobraProjetada).minus(amount);
-  const tetoDepois = purchaseMonth._lowestAfter ? purchaseMonth._lowestAfter.minus(folga) : null;
+  const sobraDepois = new Prisma.Decimal(capacity.sobraProjetada).minus(dueInFirstMonth);
+  const tetoDepois = firstDueMonth._lowestAfter ? firstDueMonth._lowestAfter.minus(folga) : null;
   const ceiling = tetoDepois ? (tetoDepois.lessThan(sobraDepois) ? tetoDepois : sobraDepois) : sobraDepois;
   const podeGuardarDepois = ceiling.greaterThan(0) ? ceiling : ZERO;
 
@@ -138,11 +140,12 @@ export async function simulatePurchase(userId: string, input: PurchaseSimulation
     motivo: reason,
     folgaUsada: money(folga),
     meses: months.map(({ _monthStart, _lowestAfter, ...rest }) => rest),
-    daParaGuardarNoMesDaCompra: {
+    daParaGuardarNoPrimeiroVencimento: {
+      mes: firstDueMonth.mes,
       antes: capacity.podeGuardarAgora,
       depois: capacity.isPast ? "0.00" : money(podeGuardarDepois),
       meta: capacity.metaValor,
-      nota: "A compra conta inteira no mês em que é feita, mesmo parcelada.",
+      nota: "No cartão, cada parcela conta no mês do vencimento da fatura; no débito/Pix, no dia da compra.",
     },
     simulado: true,
   };
