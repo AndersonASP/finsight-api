@@ -95,26 +95,45 @@ scenariosRouter.post(
   })
 );
 
-const scenarioInvoicePaymentSchema = z.object({
-  accountId: z.string().uuid(),
-  paymentDate: z.string(),
-  amount: z.string(),
-  interestAmount: z.string().optional(),
-  realInvoiceId: z.string().uuid().optional(),
-  cardId: z.string().uuid().optional(),
-  periodYear: z.number().int().optional(),
-  periodMonth: z.number().int().min(1).max(12).optional(),
-});
-
-scenariosRouter.post(
-  "/:id/invoice-payments",
+scenariosRouter.delete(
+  "/:id/transactions/:transactionId",
   asyncHandler(async (req, res) => {
-    const input = scenarioInvoicePaymentSchema.parse(req.body);
-    const payment = await scenariosService.addScenarioInvoicePayment(requireUserId(req), req.params.id, {
-      ...input,
-      paymentDate: parseDateParam(input.paymentDate, "paymentDate"),
-    });
-    res.status(201).json(payment);
+    await scenariosService.removeScenarioTransaction(requireUserId(req), req.params.id, req.params.transactionId);
+    res.status(204).send();
+  })
+);
+
+scenariosRouter.delete(
+  "/:id/purchases/:purchaseId",
+  asyncHandler(async (req, res) => {
+    await scenariosService.removeScenarioPurchase(requireUserId(req), req.params.id, req.params.purchaseId);
+    res.status(204).send();
+  })
+);
+
+function parseYearMonth(req: { query: Record<string, unknown> }) {
+  const year = Number(req.query.year);
+  const month = Number(req.query.month);
+  if (!year || !month || month < 1 || month > 12) {
+    throw AppError.badRequest("year and month query params are required (month 1-12)");
+  }
+  return { year, month };
+}
+
+scenariosRouter.get(
+  "/:id/daily-balance",
+  asyncHandler(async (req, res) => {
+    const { year, month } = parseYearMonth(req);
+    res.json(await scenariosService.getScenarioDailyBalance(requireUserId(req), req.params.id, year, month));
+  })
+);
+
+scenariosRouter.get(
+  "/:id/day-detail",
+  asyncHandler(async (req, res) => {
+    const { date } = req.query;
+    if (typeof date !== "string") throw AppError.badRequest("date query param is required (YYYY-MM-DD)");
+    res.json(await scenariosService.getScenarioDayDetail(requireUserId(req), req.params.id, parseDateParam(date, "date")));
   })
 );
 

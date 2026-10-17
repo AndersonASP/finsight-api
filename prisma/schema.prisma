@@ -17,18 +17,19 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  accounts        Account[]
-  categories      Category[]
-  transactions    Transaction[]
-  budgetItems     BudgetItem[]
-  cards           Card[]
-  purchases       Purchase[]
-  invoices        Invoice[]
-  scenarios       Scenario[]
-  savingsGoals    SavingsGoal[]
-  reserveLoans    ReserveLoan[]
-  recurringTransactions RecurringTransaction[]
-  debts           Debt[]
+  accounts               Account[]
+  categories             Category[]
+  transactions           Transaction[]
+  budgetItems            BudgetItem[]
+  cards                  Card[]
+  purchases              Purchase[]
+  invoices               Invoice[]
+  scenarios              Scenario[]
+  savingsGoals           SavingsGoal[]
+  reserveLoans           ReserveLoan[]
+  recurringTransactions  RecurringTransaction[]
+  debts                  Debt[]
+  recurringCardPurchases RecurringCardPurchase[]
 
   @@map("users")
 }
@@ -41,29 +42,27 @@ enum AccountType {
 }
 
 model Account {
-  id              String      @id @default(uuid())
-  userId          String      @map("user_id")
-  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  name            String
-  type            AccountType
-  initialBalance  Decimal     @default(0) @map("initial_balance") @db.Decimal(14, 2)
-  isArchived      Boolean     @default(false) @map("is_archived")
-  createdAt       DateTime    @default(now()) @map("created_at")
-  updatedAt       DateTime    @updatedAt @map("updated_at")
+  id             String      @id @default(uuid())
+  userId         String      @map("user_id")
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
+  type           AccountType
+  initialBalance Decimal     @default(0) @map("initial_balance") @db.Decimal(14, 2)
+  isArchived     Boolean     @default(false) @map("is_archived")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
 
-  balanceSnapshots         AccountBalanceSnapshot[]
-  transactionsAsPrimary    Transaction[]             @relation("TransactionAccount")
-  transactionsAsCounterpart Transaction[]            @relation("TransactionCounterpartAccount")
-  defaultForCards          Card[]
-  invoicePayments          InvoicePayment[]
-  scenarioTransactionsAsPrimary     ScenarioTransaction[]     @relation("ScenarioTransactionAccount")
-  scenarioTransactionsAsCounterpart ScenarioTransaction[]     @relation("ScenarioTransactionCounterpartAccount")
-  scenarioInvoicePayments          ScenarioInvoicePayment[]
-  reserveLoansAsReserve     ReserveLoan[] @relation("ReserveLoanReserveAccount")
-  reserveLoansAsDestination ReserveLoan[] @relation("ReserveLoanDestinationAccount")
-  recurringTransactionsAsPrimary    RecurringTransaction[] @relation("RecurringTransactionAccount")
-  recurringTransactionsAsCounterpart RecurringTransaction[] @relation("RecurringTransactionCounterpartAccount")
-  debtPayments    DebtPayment[]
+  balanceSnapshots                   AccountBalanceSnapshot[]
+  transactionsAsPrimary              Transaction[]            @relation("TransactionAccount")
+  transactionsAsCounterpart          Transaction[]            @relation("TransactionCounterpartAccount")
+  defaultForCards                    Card[]
+  scenarioTransactionsAsPrimary      ScenarioTransaction[]    @relation("ScenarioTransactionAccount")
+  scenarioTransactionsAsCounterpart  ScenarioTransaction[]    @relation("ScenarioTransactionCounterpartAccount")
+  reserveLoansAsReserve              ReserveLoan[]            @relation("ReserveLoanReserveAccount")
+  reserveLoansAsDestination          ReserveLoan[]            @relation("ReserveLoanDestinationAccount")
+  recurringTransactionsAsPrimary     RecurringTransaction[]   @relation("RecurringTransactionAccount")
+  recurringTransactionsAsCounterpart RecurringTransaction[]   @relation("RecurringTransactionCounterpartAccount")
+  debtPayments                       DebtPayment[]
 
   @@map("accounts")
 }
@@ -91,13 +90,14 @@ model Category {
   icon      String?
   createdAt DateTime @default(now()) @map("created_at")
 
-  transactions         Transaction[]
-  budgetItems          BudgetItem[]
-  purchases            Purchase[]
-  scenarioTransactions ScenarioTransaction[]
-  scenarioPurchases    ScenarioPurchase[]
-  scenarioBudgetItems  ScenarioBudgetItem[]
-  recurringTransactions RecurringTransaction[]
+  transactions           Transaction[]
+  budgetItems            BudgetItem[]
+  purchases              Purchase[]
+  scenarioTransactions   ScenarioTransaction[]
+  scenarioPurchases      ScenarioPurchase[]
+  scenarioBudgetItems    ScenarioBudgetItem[]
+  recurringTransactions  RecurringTransaction[]
+  recurringCardPurchases RecurringCardPurchase[]
 
   @@map("categories")
 }
@@ -220,16 +220,16 @@ model Debt {
 }
 
 model DebtPayment {
-  id            String   @id @default(uuid())
-  debtId        String   @map("debt_id")
-  debt          Debt     @relation(fields: [debtId], references: [id], onDelete: Cascade)
-  accountId     String   @map("account_id")
-  account       Account  @relation(fields: [accountId], references: [id])
-  paymentDate   DateTime @map("payment_date") @db.Date
-  amount        Decimal  @db.Decimal(14, 2)
-  balanceAfter  Decimal  @map("balance_after") @db.Decimal(14, 2)
-  notes         String?
-  createdAt     DateTime @default(now()) @map("created_at")
+  id           String   @id @default(uuid())
+  debtId       String   @map("debt_id")
+  debt         Debt     @relation(fields: [debtId], references: [id], onDelete: Cascade)
+  accountId    String   @map("account_id")
+  account      Account  @relation(fields: [accountId], references: [id])
+  paymentDate  DateTime @map("payment_date") @db.Date
+  amount       Decimal  @db.Decimal(14, 2)
+  balanceAfter Decimal  @map("balance_after") @db.Decimal(14, 2)
+  notes        String?
+  createdAt    DateTime @default(now()) @map("created_at")
 
   @@map("debt_payments")
 }
@@ -261,7 +261,6 @@ model Card {
   user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   name                    String
   brand                   String?
-  creditLimit             Decimal  @map("credit_limit") @db.Decimal(14, 2)
   closingDay              Int      @map("closing_day")
   dueDay                  Int      @map("due_day")
   defaultPaymentAccountId String   @map("default_payment_account_id")
@@ -270,42 +269,70 @@ model Card {
   createdAt               DateTime @default(now()) @map("created_at")
   updatedAt               DateTime @updatedAt @map("updated_at")
 
-  purchases         Purchase[]
-  invoices          Invoice[]
-  scenarioPurchases ScenarioPurchase[]
-  scenarioInstallments     ScenarioInstallment[]
-  scenarioInvoicePayments  ScenarioInvoicePayment[]
+  purchases              Purchase[]
+  invoices               Invoice[]
+  recurringCardPurchases RecurringCardPurchase[]
+  scenarioPurchases      ScenarioPurchase[]
+  scenarioInstallments   ScenarioInstallment[]
 
   @@map("cards")
 }
 
 model Purchase {
-  id                 String       @id @default(uuid())
-  userId             String       @map("user_id")
-  user               User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  cardId             String       @map("card_id")
-  card               Card         @relation(fields: [cardId], references: [id], onDelete: Cascade)
-  purchaseDate       DateTime     @map("purchase_date") @db.Date
-  description        String
-  amount             Decimal      @db.Decimal(14, 2)
-  categoryId         String?      @map("category_id")
-  category           Category?    @relation(fields: [categoryId], references: [id])
-  installmentsCount  Int          @default(1) @map("installments_count")
-  knownCharges       Decimal      @default(0) @map("known_charges") @db.Decimal(14, 2)
-  invoiceOverrideId  String?      @map("invoice_override_id")
-  invoiceOverride    Invoice?     @relation("PurchaseInvoiceOverride", fields: [invoiceOverrideId], references: [id])
-  createdAt          DateTime     @default(now()) @map("created_at")
-  updatedAt          DateTime     @updatedAt @map("updated_at")
+  id                      String                 @id @default(uuid())
+  userId                  String                 @map("user_id")
+  user                    User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cardId                  String                 @map("card_id")
+  card                    Card                   @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  purchaseDate            DateTime               @map("purchase_date") @db.Date
+  description             String
+  amount                  Decimal                @db.Decimal(14, 2)
+  categoryId              String?                @map("category_id")
+  category                Category?              @relation(fields: [categoryId], references: [id])
+  installmentsCount       Int                    @default(1) @map("installments_count")
+  knownCharges            Decimal                @default(0) @map("known_charges") @db.Decimal(14, 2)
+  invoiceOverrideId       String?                @map("invoice_override_id")
+  invoiceOverride         Invoice?               @relation("PurchaseInvoiceOverride", fields: [invoiceOverrideId], references: [id])
+  recurringCardPurchaseId String?                @map("recurring_card_purchase_id")
+  recurringCardPurchase   RecurringCardPurchase? @relation(fields: [recurringCardPurchaseId], references: [id], onDelete: Cascade)
+  occurrenceIndex         Int?                   @map("occurrence_index")
+  createdAt               DateTime               @default(now()) @map("created_at")
+  updatedAt               DateTime               @updatedAt @map("updated_at")
 
   installments Installment[]
 
   @@map("purchases")
 }
 
+/// A subscription that charges the card the same amount every cycle (e.g.
+/// Netflix) — eagerly generates real `Purchase` rows up front, same
+/// mechanism as `RecurringTransaction`, always monthly (a card subscription
+/// has no other cadence) and always a single (non-installment) purchase per
+/// occurrence.
+model RecurringCardPurchase {
+  id              String    @id @default(uuid())
+  userId          String    @map("user_id")
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cardId          String    @map("card_id")
+  card            Card      @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  description     String
+  amount          Decimal   @db.Decimal(14, 2)
+  categoryId      String?   @map("category_id")
+  category        Category? @relation(fields: [categoryId], references: [id])
+  startDate       DateTime  @map("start_date") @db.Date
+  occurrenceCount Int       @map("occurrence_count")
+  isOpenEnded     Boolean   @default(false) @map("is_open_ended")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  purchases Purchase[]
+
+  @@map("recurring_card_purchases")
+}
+
 enum InstallmentStatus {
   pending
   invoiced
-  paid
 }
 
 model Installment {
@@ -326,8 +353,6 @@ model Installment {
 enum InvoiceStatus {
   open
   closed
-  paid
-  partially_paid
 }
 
 model Invoice {
@@ -345,29 +370,11 @@ model Invoice {
   updatedAt   DateTime      @updatedAt @map("updated_at")
 
   installments         Installment[]
-  payments             InvoicePayment[]
-  purchaseOverrides    Purchase[]       @relation("PurchaseInvoiceOverride")
-  scenarioInstallments     ScenarioInstallment[]
-  scenarioInvoicePayments ScenarioInvoicePayment[]
+  purchaseOverrides    Purchase[]            @relation("PurchaseInvoiceOverride")
+  scenarioInstallments ScenarioInstallment[]
 
   @@unique([cardId, periodYear, periodMonth])
   @@map("invoices")
-}
-
-model InvoicePayment {
-  id              String   @id @default(uuid())
-  invoiceId       String   @map("invoice_id")
-  invoice         Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  accountId       String   @map("account_id")
-  account         Account  @relation(fields: [accountId], references: [id])
-  paymentDate     DateTime @map("payment_date") @db.Date
-  amount          Decimal  @db.Decimal(14, 2)
-  interestAmount  Decimal  @default(0) @map("interest_amount") @db.Decimal(14, 2)
-  notes           String?
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
-
-  @@map("invoice_payments")
 }
 
 // ---------------------------------------------------------------------------
@@ -440,28 +447,27 @@ model Scenario {
   confirmedAt      DateTime?      @map("confirmed_at")
   discardedAt      DateTime?      @map("discarded_at")
 
-  transactions    ScenarioTransaction[]
-  purchases       ScenarioPurchase[]
-  invoicePayments ScenarioInvoicePayment[]
-  budgetItems     ScenarioBudgetItem[]
+  transactions ScenarioTransaction[]
+  purchases    ScenarioPurchase[]
+  budgetItems  ScenarioBudgetItem[]
 
   @@map("scenarios")
 }
 
 model ScenarioTransaction {
-  id                   String           @id @default(uuid())
-  scenarioId           String           @map("scenario_id")
-  scenario             Scenario         @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
-  accountId            String           @map("account_id")
-  account              Account          @relation("ScenarioTransactionAccount", fields: [accountId], references: [id])
-  counterpartAccountId String?          @map("counterpart_account_id")
-  counterpartAccount   Account?         @relation("ScenarioTransactionCounterpartAccount", fields: [counterpartAccountId], references: [id])
+  id                   String          @id @default(uuid())
+  scenarioId           String          @map("scenario_id")
+  scenario             Scenario        @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+  accountId            String          @map("account_id")
+  account              Account         @relation("ScenarioTransactionAccount", fields: [accountId], references: [id])
+  counterpartAccountId String?         @map("counterpart_account_id")
+  counterpartAccount   Account?        @relation("ScenarioTransactionCounterpartAccount", fields: [counterpartAccountId], references: [id])
   type                 TransactionType
-  amount               Decimal          @db.Decimal(14, 2)
-  categoryId           String?          @map("category_id")
-  category             Category?        @relation(fields: [categoryId], references: [id])
+  amount               Decimal         @db.Decimal(14, 2)
+  categoryId           String?         @map("category_id")
+  category             Category?       @relation(fields: [categoryId], references: [id])
   description          String?
-  date                 DateTime         @db.Date
+  date                 DateTime        @db.Date
 
   @@map("scenario_transactions")
 }
@@ -486,40 +492,21 @@ model ScenarioPurchase {
 }
 
 model ScenarioInstallment {
-  id                 String            @id @default(uuid())
-  scenarioPurchaseId String            @map("scenario_purchase_id")
-  scenarioPurchase   ScenarioPurchase  @relation(fields: [scenarioPurchaseId], references: [id], onDelete: Cascade)
+  id                 String           @id @default(uuid())
+  scenarioPurchaseId String           @map("scenario_purchase_id")
+  scenarioPurchase   ScenarioPurchase @relation(fields: [scenarioPurchaseId], references: [id], onDelete: Cascade)
   sequence           Int
-  amount             Decimal           @db.Decimal(14, 2)
-  cardId             String            @map("card_id")
-  card               Card              @relation(fields: [cardId], references: [id])
-  periodYear         Int               @map("period_year")
-  periodMonth        Int               @map("period_month")
-  dueDate            DateTime          @map("due_date") @db.Date
-  realInvoiceId      String?           @map("real_invoice_id")
-  realInvoice        Invoice?          @relation(fields: [realInvoiceId], references: [id])
+  amount             Decimal          @db.Decimal(14, 2)
+  cardId             String           @map("card_id")
+  card               Card             @relation(fields: [cardId], references: [id])
+  periodYear         Int              @map("period_year")
+  periodMonth        Int              @map("period_month")
+  dueDate            DateTime         @map("due_date") @db.Date
+  realInvoiceId      String?          @map("real_invoice_id")
+  realInvoice        Invoice?         @relation(fields: [realInvoiceId], references: [id])
 
   @@unique([scenarioPurchaseId, sequence])
   @@map("scenario_installments")
-}
-
-model ScenarioInvoicePayment {
-  id             String   @id @default(uuid())
-  scenarioId     String   @map("scenario_id")
-  scenario       Scenario @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
-  accountId      String   @map("account_id")
-  account        Account  @relation(fields: [accountId], references: [id])
-  realInvoiceId  String?  @map("real_invoice_id")
-  realInvoice    Invoice? @relation(fields: [realInvoiceId], references: [id])
-  cardId         String?  @map("card_id")
-  card           Card?    @relation(fields: [cardId], references: [id])
-  periodYear     Int?     @map("period_year")
-  periodMonth    Int?     @map("period_month")
-  paymentDate    DateTime @map("payment_date") @db.Date
-  amount         Decimal  @db.Decimal(14, 2)
-  interestAmount Decimal  @default(0) @map("interest_amount") @db.Decimal(14, 2)
-
-  @@map("scenario_invoice_payments")
 }
 
 model ScenarioBudgetItem {
@@ -544,16 +531,16 @@ enum SavingsGoalPeriodType {
 }
 
 model SavingsGoal {
-  id               String                @id @default(uuid())
-  userId           String                @map("user_id")
-  user             User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  periodType       SavingsGoalPeriodType @map("period_type")
-  periodYear       Int                   @map("period_year")
-  periodMonth      Int?                  @map("period_month")
-  targetPercent    Decimal               @map("target_percent") @db.Decimal(5, 2)
-  methodologyNote  String?               @map("methodology_note")
-  createdAt        DateTime              @default(now()) @map("created_at")
-  updatedAt        DateTime              @updatedAt @map("updated_at")
+  id              String                @id @default(uuid())
+  userId          String                @map("user_id")
+  user            User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  periodType      SavingsGoalPeriodType @map("period_type")
+  periodYear      Int                   @map("period_year")
+  periodMonth     Int?                  @map("period_month")
+  targetPercent   Decimal               @map("target_percent") @db.Decimal(5, 2)
+  methodologyNote String?               @map("methodology_note")
+  createdAt       DateTime              @default(now()) @map("created_at")
+  updatedAt       DateTime              @updatedAt @map("updated_at")
 
   @@unique([userId, periodType, periodYear, periodMonth])
   @@map("savings_goals")

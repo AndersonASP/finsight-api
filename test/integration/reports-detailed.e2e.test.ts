@@ -41,7 +41,7 @@ describe("detailed reports (category breakdown, monthly trend, balance history, 
     const cardRes = await request(app)
       .post("/cards")
       .set("Authorization", `Bearer ${token}`)
-      .send({ name: "Cartão", creditLimit: "2000.00", closingDay: 10, dueDay: 17, defaultPaymentAccountId: accountId })
+      .send({ name: "Cartão", closingDay: 10, dueDay: 17, defaultPaymentAccountId: accountId })
       .expect(201);
     await request(app)
       .post("/purchases")

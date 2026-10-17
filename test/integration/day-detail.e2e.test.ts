@@ -30,7 +30,6 @@ describe("day detail (drill-down from a day's saldo)", () => {
       .set("Authorization", `Bearer ${token}`)
       .send({
         name: "Cartão",
-        creditLimit: "5000.00",
         closingDay: 28,
         dueDay: 2,
         defaultPaymentAccountId: account.body.id,
@@ -91,5 +90,41 @@ describe("day detail (drill-down from a day's saldo)", () => {
       .set("Authorization", `Bearer ${token}`)
       .expect(200);
     expect(res.body).toEqual([]);
+  });
+
+  it("returns every day's items at once for a from/to range (used for the offline cache)", async () => {
+    const { token } = await createTestUser();
+    const account = await request(app)
+      .post("/accounts")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ name: "Conta", type: "checking" })
+      .expect(201);
+    for (const [date, description] of [
+      ["2026-09-01", "Primeiro"],
+      ["2026-09-30", "Último"],
+      ["2026-10-01", "Fora do intervalo"],
+    ]) {
+      await request(app)
+        .post("/transactions")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ accountId: account.body.id, type: "saida", amount: "10.00", date, description })
+        .expect(201);
+    }
+
+    const res = await request(app)
+      .get("/reports/day-detail?from=2026-09-01&to=2026-09-30")
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+
+    expect(res.body.map((i: { description: string }) => i.description).sort()).toEqual(["Primeiro", "Último"]);
+    expect(res.body.map((i: { date: string }) => i.date).sort()).toEqual(["2026-09-01", "2026-09-30"]);
+  });
+
+  it("rejects a range whose end is before its start", async () => {
+    const { token } = await createTestUser();
+    await request(app)
+      .get("/reports/day-detail?from=2026-09-30&to=2026-09-01")
+      .set("Authorization", `Bearer ${token}`)
+      .expect(400);
   });
 });

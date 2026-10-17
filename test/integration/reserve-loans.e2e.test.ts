@@ -110,10 +110,11 @@ describe("reserve loans", () => {
 
     // One month later: 10% of 1000 = 100 interest owed. Repaying 300 covers
     // all the interest and 200 of principal.
+    const repaymentDate = addMonthsIso(todayIso(), 1);
     const repaymentRes = await request(app)
       .post(`/reserve-loans/${loanId}/repayments`)
       .set("Authorization", `Bearer ${token}`)
-      .send({ repaymentDate: addMonthsIso(todayIso(), 1), amount: "300.00" })
+      .send({ repaymentDate, amount: "300.00" })
       .expect(201);
 
     expect(repaymentRes.body.interestPortion).toBe("100.00");
@@ -126,14 +127,15 @@ describe("reserve loans", () => {
       .expect(200);
     expect(owedRes.body.outstandingPrincipal).toBe("800.00");
 
-    // Reserve: started with 1000, lent out 1000 (-> 0), received the 300
-    // repayment back (-> 300). Checking: received 1000, paid back 300 (-> 700).
+    // The repayment is dated a month out, so "right now" must not count it
+    // yet (same "no asOfDate means today, not forever" rule as an
+    // installment or a recurring lançamento) — check "as of" that date.
     const reserveBalance = await request(app)
-      .get(`/accounts/${reserveId}/balance`)
+      .get(`/accounts/${reserveId}/balance?date=${repaymentDate}`)
       .set("Authorization", `Bearer ${token}`)
       .expect(200);
     const checkingBalance = await request(app)
-      .get(`/accounts/${checkingId}/balance`)
+      .get(`/accounts/${checkingId}/balance?date=${repaymentDate}`)
       .set("Authorization", `Bearer ${token}`)
       .expect(200);
     expect(reserveBalance.body.balance).toBe("300.00");

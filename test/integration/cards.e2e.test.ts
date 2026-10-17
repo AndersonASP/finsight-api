@@ -2,7 +2,7 @@ import request from "supertest";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { app } from "../../src/app.js";
 import { prisma } from "../../src/core/db/prisma.js";
-import { cleanupDatabase, createTestUser } from "./helpers.js";
+import { cleanupDatabase, createTestUser, futureYearMonth } from "./helpers.js";
 
 describe("cards, purchases, invoices (RF-11)", () => {
   afterEach(async () => {
@@ -26,7 +26,6 @@ describe("cards, purchases, invoices (RF-11)", () => {
       .set("Authorization", `Bearer ${token}`)
       .send({
         name: "Cartão",
-        creditLimit: "5000.00",
         closingDay: 10,
         dueDay: 17,
         defaultPaymentAccountId: accountRes.body.id,
@@ -99,5 +98,24 @@ describe("cards, purchases, invoices (RF-11)", () => {
 
     const res = await request(app).delete(`/purchases/${purchaseRes.body.id}`).set("Authorization", `Bearer ${token}`);
     expect(res.status).toBe(409);
+  });
+
+  it("the account's current balance only counts installments already due, not every future one a parcelado purchase or assinatura eagerly generated", async () => {
+    const { token, accountId, cardId } = await setup();
+    const { year, month } = futureYearMonth(1);
+    const startDate = `${year}-${String(month).padStart(2, "0")}-05`;
+
+    // "a perder de vista" eagerly materializes 120 months of installments —
+    // only the first one (if any) could possibly be due by "today".
+    await request(app)
+      .post("/recurring-card-purchases")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ cardId, description: "Assinatura", amount: "39.90", startDate, isOpenEnded: true })
+      .expect(201);
+
+    const balanceRes = await request(app).get(`/accounts/${accountId}/balance`).set("Authorization", `Bearer ${token}`).expect(200);
+    // None of the 120 generated installments are due yet (they start a month
+    // from now) — "right now" must not subtract any of them.
+    expect(balanceRes.body.balance).toBe("0.00");
   });
 });

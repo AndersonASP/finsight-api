@@ -2,7 +2,7 @@ import request from "supertest";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { app } from "../../src/app.js";
 import { prisma } from "../../src/core/db/prisma.js";
-import { cleanupDatabase, createTestUser } from "./helpers.js";
+import { cleanupDatabase, createTestUser, todayIso } from "./helpers.js";
 
 describe("recurring transactions", () => {
   afterEach(async () => {
@@ -101,5 +101,22 @@ describe("recurring transactions", () => {
 
     const afterRes = await request(app).get("/transactions").set("Authorization", `Bearer ${token}`).expect(200);
     expect(afterRes.body).toHaveLength(2);
+  });
+
+  it("the account's current balance only counts occurrences already past, not every future one 'a perder de vista' eagerly generated", async () => {
+    const { token, accountId } = await setup();
+
+    // "a perder de vista" eagerly materializes a ~10-year window of monthly
+    // occurrences — only one (today's) could possibly have happened yet.
+    await request(app)
+      .post("/recurring-transactions")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ accountId, type: "saida", amount: "500.00", startDate: todayIso(), interval: "monthly", isOpenEnded: true })
+      .expect(201);
+
+    const balanceRes = await request(app).get(`/accounts/${accountId}/balance`).set("Authorization", `Bearer ${token}`).expect(200);
+    // 119 of the 120 generated occurrences are still in the future — "right
+    // now" must not subtract any of them beyond the one already due.
+    expect(balanceRes.body.balance).toBe("-500.00");
   });
 });

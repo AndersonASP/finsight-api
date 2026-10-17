@@ -34,8 +34,47 @@ export async function updateAccount(
   return prisma.account.update({ where: { id: accountId }, data: input });
 }
 
+/**
+ * Transactions/recurring-series/snapshots *owned* by this account cascade on
+ * delete (so they're fine to let go — the Flutter side warns about that loss
+ * of history first). Everything else below only *references* this account
+ * without owning it, so the DB has no cascade rule for it — deleting the
+ * account would otherwise fail with a raw foreign-key error (or, worse,
+ * silently orphan a card/loan's "which account" pointer). Block instead,
+ * with a reason the user can actually act on.
+ */
 export async function deleteAccount(userId: string, accountId: string) {
-  await getOwnedAccount(userId, accountId);
+  const account = await getOwnedAccount(userId, accountId);
+
+  const [cardsUsingIt, reserveLoansUsingIt, debtPaymentsUsingIt, counterpartTransactions, counterpartRecurring, otherCheckingAccounts] =
+    await Promise.all([
+      prisma.card.count({ where: { defaultPaymentAccountId: accountId } }),
+      prisma.reserveLoan.count({ where: { OR: [{ reserveAccountId: accountId }, { destinationAccountId: accountId }] } }),
+      prisma.debtPayment.count({ where: { accountId } }),
+      prisma.transaction.count({ where: { counterpartAccountId: accountId } }),
+      prisma.recurringTransaction.count({ where: { counterpartAccountId: accountId } }),
+      account.type === "checking"
+        ? prisma.account.count({ where: { userId, type: "checking", isArchived: false, id: { not: accountId } } })
+        : Promise.resolve(1), // not a checking account: this guard doesn't apply
+    ]);
+
+  const reasons: string[] = [];
+  if (cardsUsingIt > 0) reasons.push("é a conta de pagamento padrão de um ou mais cartões");
+  if (reserveLoansUsingIt > 0) reasons.push("tem empréstimo(s) da reserva vinculado(s)");
+  if (debtPaymentsUsingIt > 0) reasons.push("tem pagamento(s) de dívida registrados");
+  if (counterpartTransactions > 0 || counterpartRecurring > 0) {
+    reasons.push("é destino de alguma transferência (economia) de outra conta");
+  }
+  // Every "adicionar lançamento" flow assumes at least one checking account
+  // exists for its smart default — removing the last one would dead-end it.
+  if (otherCheckingAccounts === 0) {
+    reasons.push("é a única conta corrente cadastrada — crie outra antes de remover esta");
+  }
+
+  if (reasons.length > 0) {
+    throw AppError.badRequest(`Não é possível excluir esta conta: ela ${reasons.join(" e ")}.`);
+  }
+
   await prisma.account.delete({ where: { id: accountId } });
 }
 
@@ -43,10 +82,11 @@ export async function deleteAccount(userId: string, accountId: string) {
  * Balance = initial balance, plus `entrada` transactions on this account, minus
  * `saida`/`diario`/`economia` transactions on this account, plus `economia`
  * transfers where this account is the *counterpart* (money arriving via a
- * transfer-to-reserve, see RF-14), minus invoice payments made from this
- * account (RF-12: the card purchases themselves never touch the bank balance —
- * only paying the bill does, on its actual/effective payment date), minus
- * reserve-loan principal lent out from here / plus principal received here,
+ * transfer-to-reserve, see RF-14), minus every card installment whose
+ * *due date* has passed and whose card's default payment account is this one
+ * (RF-12: the purchase itself never touches the bank balance — the bill
+ * debits automatically, in full, on the due date; there's no separate manual
+ * payment step), minus reserve-loan principal lent out from here / plus principal received here,
  * plus reserve-loan repayments received here / minus repayments paid from
  * here (a loan is debt, not an `economia` transfer — see reserve-loans),
  * minus debt payments made from here (paying off a third-party debt, see
@@ -60,16 +100,26 @@ export async function deleteAccount(userId: string, accountId: string) {
 export async function getAccountBalance(userId: string, accountId: string, asOfDate?: Date) {
   const account = await getOwnedAccount(userId, accountId);
   const initialBalanceCounts = !asOfDate || asOfDate.getTime() >= startOfUtcDay(account.createdAt).getTime();
-  const dateFilter = asOfDate ? { date: { lte: asOfDate } } : {};
-  const paymentDateFilter = asOfDate ? { paymentDate: { lte: asOfDate } } : {};
-  const borrowDateFilter = asOfDate ? { borrowDate: { lte: asOfDate } } : {};
-  const repaymentDateFilter = asOfDate ? { repaymentDate: { lte: asOfDate } } : {};
+  // Every one of these is bounded, even when the caller passes no asOfDate
+  // at all ("balance right now"): a recurring lançamento ("a perder de
+  // vista") or a parcelado/assinatura purchase eagerly generates every
+  // future occurrence/installment up front (see
+  // recurring-transactions.service.ts, purchases.service.ts,
+  // recurring-card-purchase-generator.service.ts) — an unbounded sum here
+  // would pull years of not-yet-happened activity into "right now"'s
+  // balance. "No asOfDate" always means "as of today", never "forever".
+  const effectiveAsOfDate = asOfDate ?? startOfUtcDay(new Date());
+  const dateFilter = { date: { lte: effectiveAsOfDate } };
+  const dueDateFilter = { dueDate: { lte: effectiveAsOfDate } };
+  const paymentDateFilter = { paymentDate: { lte: effectiveAsOfDate } };
+  const borrowDateFilter = { borrowDate: { lte: effectiveAsOfDate } };
+  const repaymentDateFilter = { repaymentDate: { lte: effectiveAsOfDate } };
 
   const [
     incoming,
     outgoing,
     transfersIn,
-    invoicePayments,
+    installmentsDue,
     loansLentFromHere,
     loansReceivedHere,
     repaymentsReceivedHere,
@@ -88,9 +138,9 @@ export async function getAccountBalance(userId: string, accountId: string, asOfD
       _sum: { amount: true },
       where: { counterpartAccountId: accountId, type: "economia", ...dateFilter },
     }),
-    prisma.invoicePayment.aggregate({
+    prisma.installment.aggregate({
       _sum: { amount: true },
-      where: { accountId, ...paymentDateFilter },
+      where: { purchase: { card: { defaultPaymentAccountId: accountId } }, ...dueDateFilter },
     }),
     prisma.reserveLoan.aggregate({
       _sum: { principal: true },
@@ -118,7 +168,7 @@ export async function getAccountBalance(userId: string, accountId: string, asOfD
     .plus(incoming._sum.amount ?? 0)
     .minus(outgoing._sum.amount ?? 0)
     .plus(transfersIn._sum.amount ?? 0)
-    .minus(invoicePayments._sum.amount ?? 0)
+    .minus(installmentsDue._sum.amount ?? 0)
     .minus(loansLentFromHere._sum.principal ?? 0)
     .plus(loansReceivedHere._sum.principal ?? 0)
     .plus(repaymentsReceivedHere._sum.amount ?? 0)

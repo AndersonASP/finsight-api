@@ -13,6 +13,8 @@ export interface PurchaseInput {
   installmentsCount?: number;
   knownCharges?: string;
   invoiceOverrideId?: string;
+  recurringCardPurchaseId?: string;
+  occurrenceIndex?: number;
 }
 
 export async function findOrCreateInvoice(
@@ -116,6 +118,8 @@ export async function createPurchaseInTx(tx: Prisma.TransactionClient, userId: s
       installmentsCount,
       knownCharges: input.knownCharges ?? "0",
       invoiceOverrideId: input.invoiceOverrideId,
+      recurringCardPurchaseId: input.recurringCardPurchaseId,
+      occurrenceIndex: input.occurrenceIndex,
     },
   });
 
@@ -142,8 +146,40 @@ export async function createPurchase(userId: string, input: PurchaseInput) {
   return prisma.$transaction((tx) => createPurchaseInTx(tx, userId, input));
 }
 
-export async function deletePurchase(userId: string, purchaseId: string) {
+/**
+ * `scope: "future"` only does something special when this purchase is one
+ * occurrence of a `RecurringCardPurchase` (a subscription): it removes this
+ * occurrence and every later one in the same series (by `occurrenceIndex`,
+ * mirroring transactions.service.ts's deleteTransaction), leaving past
+ * occurrences untouched. Otherwise (or for a one-off purchase) it just
+ * deletes the one row, same as before.
+ */
+export async function deletePurchase(userId: string, purchaseId: string, scope: "this" | "future" = "this") {
   const purchase = await getOwnedPurchase(userId, purchaseId);
+
+  if (scope === "future" && purchase.recurringCardPurchaseId && purchase.occurrenceIndex != null) {
+    const futurePurchases = await prisma.purchase.findMany({
+      where: {
+        userId,
+        recurringCardPurchaseId: purchase.recurringCardPurchaseId,
+        occurrenceIndex: { gte: purchase.occurrenceIndex },
+      },
+      include: { installments: true },
+    });
+    const hasNonPending = futurePurchases.some((p) => p.installments.some((i) => i.status !== "pending"));
+    if (hasNonPending) {
+      throw AppError.conflict("Cannot delete a purchase with invoiced or paid installments");
+    }
+    await prisma.purchase.deleteMany({
+      where: {
+        userId,
+        recurringCardPurchaseId: purchase.recurringCardPurchaseId,
+        occurrenceIndex: { gte: purchase.occurrenceIndex },
+      },
+    });
+    return;
+  }
+
   const hasNonPending = purchase.installments.some((i) => i.status !== "pending");
   if (hasNonPending) {
     throw AppError.conflict("Cannot delete a purchase with invoiced or paid installments");

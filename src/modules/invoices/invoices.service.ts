@@ -24,13 +24,9 @@ async function getOwnedInvoice(userId: string, invoiceId: string) {
 }
 
 async function computeTotals(invoiceId: string) {
-  const [installmentsTotal, paymentsTotal] = await Promise.all([
-    prisma.installment.aggregate({ _sum: { amount: true }, where: { invoiceId } }),
-    prisma.invoicePayment.aggregate({ _sum: { amount: true }, where: { invoiceId } }),
-  ]);
+  const installmentsTotal = await prisma.installment.aggregate({ _sum: { amount: true }, where: { invoiceId } });
   const total = new Prisma.Decimal(installmentsTotal._sum.amount ?? 0);
-  const paid = new Prisma.Decimal(paymentsTotal._sum.amount ?? 0);
-  return { total: total.toFixed(2), paid: paid.toFixed(2), remaining: total.minus(paid).toFixed(2) };
+  return { total: total.toFixed(2) };
 }
 
 export async function listInvoices(userId: string, filter: { cardId?: string; status?: InvoiceStatus }) {
@@ -47,16 +43,15 @@ export async function listInvoices(userId: string, filter: { cardId?: string; st
 
 export async function getInvoiceDetail(userId: string, invoiceId: string) {
   const invoice = await getOwnedInvoice(userId, invoiceId);
-  const [installments, payments, totals] = await Promise.all([
+  const [installments, totals] = await Promise.all([
     prisma.installment.findMany({
       where: { invoiceId },
       include: { purchase: true },
       orderBy: { dueDate: "asc" },
     }),
-    prisma.invoicePayment.findMany({ where: { invoiceId }, orderBy: { paymentDate: "asc" } }),
     computeTotals(invoiceId),
   ]);
-  return { ...invoice, ...totals, installments, payments };
+  return { ...invoice, ...totals, installments };
 }
 
 export async function reassignInstallmentInvoice(userId: string, installmentId: string, newInvoiceId: string) {
@@ -66,9 +61,6 @@ export async function reassignInstallmentInvoice(userId: string, installmentId: 
   const newInvoice = await getOwnedInvoice(userId, newInvoiceId);
   if (newInvoice.cardId !== installment.purchase.cardId) {
     throw AppError.badRequest("Target invoice must belong to the same card");
-  }
-  if (installment.status === "paid") {
-    throw AppError.conflict("Cannot reassign a paid installment");
   }
 
   return prisma.installment.update({

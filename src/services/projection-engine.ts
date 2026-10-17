@@ -51,12 +51,14 @@ async function realDailyDeltas(userId: string, from: Date, to: Date): Promise<Ma
     else if (t.type === "economia" && !t.counterpartAccountId) deltas.set(key, current.minus(amount));
   }
 
-  const payments = await prisma.invoicePayment.findMany({
-    where: { invoice: { userId }, paymentDate: { gte: from, lte: to } },
+  // The bill debits automatically in full on each installment's due date
+  // (see accounts.service.ts's getAccountBalance) — no manual payment to sum here.
+  const installmentsDue = await prisma.installment.findMany({
+    where: { purchase: { userId }, dueDate: { gte: from, lte: to } },
   });
-  for (const p of payments) {
-    const key = dateKey(p.paymentDate);
-    deltas.set(key, (deltas.get(key) ?? ZERO).minus(new Prisma.Decimal(p.amount)));
+  for (const installment of installmentsDue) {
+    const key = dateKey(installment.dueDate);
+    deltas.set(key, (deltas.get(key) ?? ZERO).minus(new Prisma.Decimal(installment.amount)));
   }
 
   return deltas;
@@ -77,27 +79,14 @@ async function scenarioDailyDeltas(scenarioId: string, from: Date, to: Date): Pr
     else if (t.type === "economia" && !t.counterpartAccountId) deltas.set(key, current.minus(amount));
   }
 
-  const payments = await prisma.scenarioInvoicePayment.findMany({
-    where: { scenarioId, paymentDate: { gte: from, lte: to } },
-  });
-  const explicitlyCoveredPeriods = new Set<string>();
-  for (const p of payments) {
-    const key = dateKey(p.paymentDate);
-    deltas.set(key, (deltas.get(key) ?? ZERO).minus(new Prisma.Decimal(p.amount)));
-    if (p.cardId && p.periodYear && p.periodMonth) {
-      explicitlyCoveredPeriods.add(`${p.cardId}:${p.periodYear}:${p.periodMonth}`);
-    }
-  }
-
-  // An installment from a scenario purchase assumes it gets paid in full on its
-  // due date, unless the user already modeled an explicit payment for that
-  // card+period (avoiding double-counting the same projected outflow).
+  // An installment from a scenario purchase debits in full on its due date —
+  // same rule as a real installment (see accounts.service.ts), no simulated
+  // invoice payment to avoid double-counting against since the real world
+  // doesn't have one either.
   const installments = await prisma.scenarioInstallment.findMany({
     where: { scenarioPurchase: { scenarioId }, dueDate: { gte: from, lte: to } },
   });
   for (const installment of installments) {
-    const periodKey = `${installment.cardId}:${installment.periodYear}:${installment.periodMonth}`;
-    if (explicitlyCoveredPeriods.has(periodKey)) continue;
     const key = dateKey(installment.dueDate);
     deltas.set(key, (deltas.get(key) ?? ZERO).minus(new Prisma.Decimal(installment.amount)));
   }

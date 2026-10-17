@@ -72,11 +72,16 @@ export interface DailyBalanceDay {
   day: number;
   date: string;
   entrada: string;
+  entradaShadow: boolean;
   saida: string;
+  saidaShadow: boolean;
   diario: string;
   diarioIsForecast: boolean;
+  diarioShadow: boolean;
   economia: string;
+  economiaShadow: boolean;
   cartao: string;
+  cartaoShadow: boolean;
   saldo: string;
 }
 
@@ -94,8 +99,21 @@ export interface DailyBalanceDay {
  * items aren't tied to any one account). Today itself never gets this: the
  * day starts with nothing spent yet, so it stays at its real (zero) value.
  * A real transaction on a future day always wins over the projection.
+ *
+ * `scenarioId` (only honored together with no `accountId` — a simulação is
+ * always viewed as the consolidated table, same as Saldos itself) overlays a
+ * draft scenario's shadow rows on top of the real ones: same columns, same
+ * `saldo`, plus a `*Shadow` flag per column marking a day whose value
+ * includes at least one simulated row (so the UI can show it the way it
+ * already shows "previsão de diário" — outlined/italic instead of filled).
  */
-export async function getDailyBalance(userId: string, year: number, month: number, accountId?: string) {
+export async function getDailyBalance(
+  userId: string,
+  year: number,
+  month: number,
+  accountId?: string,
+  scenarioId?: string
+) {
   const monthStart = new Date(Date.UTC(year, month - 1, 1));
   const monthEnd = new Date(Date.UTC(year, month, 1));
   const dayBeforeMonth = new Date(monthStart.getTime() - 24 * 60 * 60 * 1000);
@@ -121,17 +139,20 @@ export async function getDailyBalance(userId: string, year: number, month: numbe
 
   // Card purchases are the "despesa original" (RF-12): shown here at purchase
   // time for the full amount, same as `diario`. They never move `saldo` on
-  // their own — only an actual invoice payment (below) touches cash.
+  // their own — only the automatic debit on each installment's due date
+  // (below) touches cash.
   const purchases = await prisma.purchase.findMany({
     where: { userId, purchaseDate: { gte: monthStart, lt: monthEnd } },
   });
 
-  const invoicePayments = await prisma.invoicePayment.findMany({
+  // The bill debits automatically in full on each installment's *due date*
+  // (see getAccountBalance) — no more manual invoice payment step.
+  const installmentsDue = await prisma.installment.findMany({
     where: {
-      invoice: { userId },
-      paymentDate: { gte: monthStart, lt: monthEnd },
-      ...(accountId ? { accountId } : {}),
+      dueDate: { gte: monthStart, lt: monthEnd },
+      purchase: { userId, ...(accountId ? { card: { defaultPaymentAccountId: accountId } } : {}) },
     },
+    include: { purchase: { include: { card: true } } },
   });
 
   // Debt payments and reserve-loan movements also move real cash (see
@@ -182,10 +203,26 @@ export async function getDailyBalance(userId: string, year: number, month: numbe
     cartao: ZERO,
   }));
   const deltas = Array.from({ length: numDays }, () => ZERO);
+  const entradaShadow = new Array<boolean>(numDays).fill(false);
+  const saidaShadow = new Array<boolean>(numDays).fill(false);
+  const diarioShadow = new Array<boolean>(numDays).fill(false);
+  const economiaShadow = new Array<boolean>(numDays).fill(false);
+  const cartaoShadow = new Array<boolean>(numDays).fill(false);
 
   for (const p of purchases) {
     const dayIndex = p.purchaseDate.getUTCDate() - 1;
     columns[dayIndex].cartao = columns[dayIndex].cartao.plus(new Prisma.Decimal(p.amount));
+  }
+
+  if (scenarioId) {
+    const scenarioPurchases = await prisma.scenarioPurchase.findMany({
+      where: { scenarioId, purchaseDate: { gte: monthStart, lt: monthEnd } },
+    });
+    for (const p of scenarioPurchases) {
+      const dayIndex = p.purchaseDate.getUTCDate() - 1;
+      columns[dayIndex].cartao = columns[dayIndex].cartao.plus(new Prisma.Decimal(p.amount));
+      cartaoShadow[dayIndex] = true;
+    }
   }
 
   for (const t of transactions) {
@@ -226,9 +263,68 @@ export async function getDailyBalance(userId: string, year: number, month: numbe
     }
   }
 
-  for (const payment of invoicePayments) {
-    const dayIndex = payment.paymentDate.getUTCDate() - 1;
-    deltas[dayIndex] = deltas[dayIndex].minus(new Prisma.Decimal(payment.amount));
+  if (scenarioId) {
+    // Same shape as Transaction (accountId points at a real account), so the
+    // exact checking-only aggregate logic above applies unchanged.
+    const scenarioTransactions = await prisma.scenarioTransaction.findMany({
+      where: { scenarioId, date: { gte: monthStart, lt: monthEnd } },
+    });
+    for (const t of scenarioTransactions) {
+      const dayIndex = t.date.getUTCDate() - 1;
+      const amount = new Prisma.Decimal(t.amount);
+      const isCheckingPrimary = accountTypeById.get(t.accountId) === "checking";
+      const isCheckingCounterpart = t.counterpartAccountId != null && accountTypeById.get(t.counterpartAccountId) === "checking";
+
+      if (isCheckingPrimary) {
+        if (t.type === "entrada") {
+          columns[dayIndex].entrada = columns[dayIndex].entrada.plus(amount);
+          entradaShadow[dayIndex] = true;
+          deltas[dayIndex] = deltas[dayIndex].plus(amount);
+        } else if (t.type === "saida") {
+          columns[dayIndex].saida = columns[dayIndex].saida.plus(amount);
+          saidaShadow[dayIndex] = true;
+          deltas[dayIndex] = deltas[dayIndex].minus(amount);
+        } else if (t.type === "diario") {
+          columns[dayIndex].diario = columns[dayIndex].diario.plus(amount);
+          diarioShadow[dayIndex] = true;
+          deltas[dayIndex] = deltas[dayIndex].minus(amount);
+        } else if (t.type === "economia") {
+          columns[dayIndex].economia = columns[dayIndex].economia.plus(amount);
+          economiaShadow[dayIndex] = true;
+          deltas[dayIndex] = deltas[dayIndex].minus(amount);
+        }
+      }
+      if (isCheckingCounterpart && t.type === "economia") {
+        deltas[dayIndex] = deltas[dayIndex].plus(amount);
+      }
+    }
+  }
+
+  for (const installment of installmentsDue) {
+    const dayIndex = installment.dueDate.getUTCDate() - 1;
+    const amount = new Prisma.Decimal(installment.amount);
+    const payingAccountId = installment.purchase.card.defaultPaymentAccountId;
+    if (accountId) {
+      // Already scoped to this account's card(s) by the query above.
+      deltas[dayIndex] = deltas[dayIndex].minus(amount);
+    } else if (accountTypeById.get(payingAccountId) === "checking") {
+      deltas[dayIndex] = deltas[dayIndex].minus(amount);
+    }
+  }
+
+  if (scenarioId) {
+    // Same "debits in full on its due date" rule as a real installment —
+    // there's no simulated invoice payment to avoid double-counting against,
+    // since the real world doesn't have one either (see accounts.service.ts).
+    const scenarioInstallments = await prisma.scenarioInstallment.findMany({
+      where: { scenarioPurchase: { scenarioId }, dueDate: { gte: monthStart, lt: monthEnd } },
+      include: { card: true },
+    });
+    for (const installment of scenarioInstallments) {
+      if (accountTypeById.get(installment.card.defaultPaymentAccountId) !== "checking") continue;
+      const dayIndex = installment.dueDate.getUTCDate() - 1;
+      deltas[dayIndex] = deltas[dayIndex].minus(new Prisma.Decimal(installment.amount));
+    }
   }
 
   for (const payment of debtPayments) {
@@ -297,11 +393,16 @@ export async function getDailyBalance(userId: string, year: number, month: numbe
       day,
       date: `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
       entrada: columns[i].entrada.toFixed(2),
+      entradaShadow: entradaShadow[i],
       saida: columns[i].saida.toFixed(2),
+      saidaShadow: saidaShadow[i],
       diario: columns[i].diario.toFixed(2),
       diarioIsForecast: isForecast[i],
+      diarioShadow: diarioShadow[i],
       economia: columns[i].economia.toFixed(2),
+      economiaShadow: economiaShadow[i],
       cartao: columns[i].cartao.toFixed(2),
+      cartaoShadow: cartaoShadow[i],
       saldo: runningBalance.toFixed(2),
     });
   }
@@ -329,8 +430,8 @@ export interface DayDetailItem {
  * specific installment is billed), which is intentionally independent of the
  * `cartao` aggregate column (dated by purchase time, per RF-12).
  */
-export async function getDayDetail(userId: string, date: Date): Promise<DayDetailItem[]> {
-  const nextDay = new Date(date.getTime() + 24 * 60 * 60 * 1000);
+export async function getDayDetail(userId: string, date: Date, toInclusive: Date = date): Promise<DayDetailItem[]> {
+  const nextDay = new Date(toInclusive.getTime() + 24 * 60 * 60 * 1000);
 
   const [transactions, installments] = await Promise.all([
     prisma.transaction.findMany({
@@ -364,17 +465,25 @@ export async function getDayDetail(userId: string, date: Date): Promise<DayDetai
   }
 
   for (const installment of installments) {
+    const purchase = installment.purchase;
     items.push({
-      id: installment.id,
+      // The purchase's id, not the installment's — deleting a card-purchase
+      // row operates on DELETE /purchases/:id (the whole purchase, every
+      // installment cascades), same unit a "esta e as futuras" delete on a
+      // subscription operates on below.
+      id: purchase.id,
       type: "cartao",
-      description: installment.purchase.description,
+      description: purchase.description,
       date: installment.dueDate.toISOString().slice(0, 10),
       amount: new Prisma.Decimal(installment.amount).toFixed(2),
-      categoryId: installment.purchase.categoryId,
-      categoryName: installment.purchase.category?.name ?? null,
-      categoryColor: installment.purchase.category?.color ?? null,
-      installment: { sequence: installment.sequence, count: installment.purchase.installmentsCount },
-      recurring: null,
+      categoryId: purchase.categoryId,
+      categoryName: purchase.category?.name ?? null,
+      categoryColor: purchase.category?.color ?? null,
+      installment: { sequence: installment.sequence, count: purchase.installmentsCount },
+      recurring:
+        purchase.recurringCardPurchaseId != null && purchase.occurrenceIndex != null
+          ? { seriesId: purchase.recurringCardPurchaseId, occurrenceIndex: purchase.occurrenceIndex }
+          : null,
     });
   }
 
@@ -499,6 +608,39 @@ export async function getCategoryBreakdown(userId: string, year: number, month: 
 
   return [...totals.entries()]
     .map(([categoryId, v]) => ({ categoryId, name: v.name, color: v.color, total: v.total.toFixed(2) }))
+    .sort((a, b) => Number(b.total) - Number(a.total));
+}
+
+export interface CardSpendingItem {
+  cardId: string;
+  name: string;
+  total: string;
+}
+
+/**
+ * How much was spent on each registered card — grouped by `purchaseDate`
+ * (the moment the purchase was made, like the "cartão" column in Saldos),
+ * not by the installment's due date. A `month` aggregates just that month;
+ * omitting it aggregates the whole `year`.
+ */
+export async function getCardSpending(userId: string, year: number, month?: number): Promise<CardSpendingItem[]> {
+  const rangeStart = month ? new Date(Date.UTC(year, month - 1, 1)) : new Date(Date.UTC(year, 0, 1));
+  const rangeEnd = month ? new Date(Date.UTC(year, month, 1)) : new Date(Date.UTC(year + 1, 0, 1));
+
+  const purchases = await prisma.purchase.findMany({
+    where: { userId, purchaseDate: { gte: rangeStart, lt: rangeEnd } },
+    include: { card: true },
+  });
+
+  const totals = new Map<string, { name: string; total: Prisma.Decimal }>();
+  for (const p of purchases) {
+    const existing = totals.get(p.cardId) ?? { name: p.card.name, total: ZERO };
+    existing.total = existing.total.plus(p.amount);
+    totals.set(p.cardId, existing);
+  }
+
+  return [...totals.entries()]
+    .map(([cardId, v]) => ({ cardId, name: v.name, total: v.total.toFixed(2) }))
     .sort((a, b) => Number(b.total) - Number(a.total));
 }
 

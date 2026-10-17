@@ -1,4 +1,3 @@
-import { Prisma } from "@prisma/client";
 import { prisma } from "../../core/db/prisma.js";
 import { AppError } from "../../core/http/errors.js";
 import { getOwnedAccount } from "../accounts/accounts.service.js";
@@ -6,7 +5,6 @@ import { getOwnedAccount } from "../accounts/accounts.service.js";
 export interface CardInput {
   name: string;
   brand?: string;
-  creditLimit: string;
   closingDay: number;
   dueDay: number;
   defaultPaymentAccountId: string;
@@ -31,7 +29,6 @@ export async function createCard(userId: string, input: CardInput) {
       userId,
       name: input.name,
       brand: input.brand,
-      creditLimit: input.creditLimit,
       closingDay: input.closingDay,
       dueDay: input.dueDay,
       defaultPaymentAccountId: input.defaultPaymentAccountId,
@@ -52,16 +49,6 @@ export async function updateCard(userId: string, cardId: string, input: Partial<
 export async function deleteCard(userId: string, cardId: string) {
   await getOwnedCard(userId, cardId);
   await prisma.card.delete({ where: { id: cardId } });
-}
-
-export async function getAvailableLimit(userId: string, cardId: string) {
-  const card = await getOwnedCard(userId, cardId);
-  const openBalance = await prisma.installment.aggregate({
-    _sum: { amount: true },
-    where: { purchase: { cardId }, invoice: { status: { in: ["open", "closed", "partially_paid"] } } },
-  });
-  const used = new Prisma.Decimal(openBalance._sum.amount ?? 0);
-  return new Prisma.Decimal(card.creditLimit).minus(used);
 }
 
 function validateDays(closingDay: number, dueDay: number) {

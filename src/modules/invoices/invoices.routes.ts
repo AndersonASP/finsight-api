@@ -6,7 +6,7 @@ import * as invoicesService from "./invoices.service.js";
 
 export const invoicesRouter = Router();
 
-const invoiceStatusSchema = z.enum(["open", "closed", "paid", "partially_paid"]);
+const invoiceStatusSchema = z.enum(["open", "closed"]);
 
 invoicesRouter.get(
   "/",

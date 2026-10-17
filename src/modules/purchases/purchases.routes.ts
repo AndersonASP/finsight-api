@@ -50,10 +50,13 @@ purchasesRouter.post(
   })
 );
 
+const deleteScopeSchema = z.enum(["this", "future"]).optional();
+
 purchasesRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
-    await purchasesService.deletePurchase(requireUserId(req), req.params.id);
+    const scope = deleteScopeSchema.parse(req.query.scope);
+    await purchasesService.deletePurchase(requireUserId(req), req.params.id, scope);
     res.status(204).send();
   })
 );

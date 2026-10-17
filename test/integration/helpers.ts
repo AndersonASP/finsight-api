@@ -48,7 +48,6 @@ export function futureYearMonth(monthsAhead: number): { year: number; month: num
 
 export async function cleanupDatabase() {
   await prisma.scenarioBudgetItem.deleteMany();
-  await prisma.scenarioInvoicePayment.deleteMany();
   await prisma.scenarioInstallment.deleteMany();
   await prisma.scenarioPurchase.deleteMany();
   await prisma.scenarioTransaction.deleteMany();
@@ -59,9 +58,10 @@ export async function cleanupDatabase() {
   await prisma.recurringTransaction.deleteMany();
   await prisma.debtPayment.deleteMany();
   await prisma.debt.deleteMany();
-  await prisma.invoicePayment.deleteMany();
   await prisma.installment.deleteMany();
   await prisma.invoice.deleteMany();
+  // Cascades to delete every Purchase row generated for the series too.
+  await prisma.recurringCardPurchase.deleteMany();
   await prisma.purchase.deleteMany();
   await prisma.card.deleteMany();
   await prisma.budgetItem.deleteMany();

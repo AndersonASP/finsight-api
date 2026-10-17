@@ -1,9 +1,9 @@
 import { Prisma, type TransactionType } from "@prisma/client";
 import { prisma } from "../../core/db/prisma.js";
 import { AppError } from "../../core/http/errors.js";
-import { createPaymentInTx } from "../invoice-payments/invoice-payments.service.js";
-import { createPurchaseInTx, findOrCreateInvoice } from "../purchases/purchases.service.js";
+import { createPurchaseInTx } from "../purchases/purchases.service.js";
 import { generateInstallmentPlan } from "../../services/installment-generator.service.js";
+import { getDailyBalance, getDayDetail, type DayDetailItem } from "../reports/reports.service.js";
 
 export async function getOwnedScenario(userId: string, scenarioId: string) {
   const scenario = await prisma.scenario.findUnique({ where: { id: scenarioId } });
@@ -29,13 +29,12 @@ export async function createScenario(userId: string, input: { name: string; desc
 
 export async function getScenarioDetail(userId: string, scenarioId: string) {
   const scenario = await getOwnedScenario(userId, scenarioId);
-  const [transactions, purchases, invoicePayments, budgetItems] = await Promise.all([
+  const [transactions, purchases, budgetItems] = await Promise.all([
     prisma.scenarioTransaction.findMany({ where: { scenarioId } }),
     prisma.scenarioPurchase.findMany({ where: { scenarioId }, include: { installments: true } }),
-    prisma.scenarioInvoicePayment.findMany({ where: { scenarioId } }),
     prisma.scenarioBudgetItem.findMany({ where: { scenarioId } }),
   ]);
-  return { ...scenario, transactions, purchases, invoicePayments, budgetItems };
+  return { ...scenario, transactions, purchases, budgetItems };
 }
 
 // --- shadow sub-resources ---------------------------------------------------
@@ -124,24 +123,94 @@ export async function addScenarioPurchase(userId: string, scenarioId: string, in
   });
 }
 
-export interface ScenarioInvoicePaymentInput {
-  accountId: string;
-  paymentDate: Date;
-  amount: string;
-  interestAmount?: string;
-  realInvoiceId?: string;
-  cardId?: string;
-  periodYear?: number;
-  periodMonth?: number;
-}
-
-export async function addScenarioInvoicePayment(userId: string, scenarioId: string, input: ScenarioInvoicePaymentInput) {
+/**
+ * Mirrors transactions.service.ts's deleteTransaction/purchases.service.ts's
+ * deletePurchase ownership checks, scoped one level deeper (through the
+ * scenario) since a shadow row has no userId of its own.
+ */
+export async function removeScenarioTransaction(userId: string, scenarioId: string, transactionId: string) {
   const scenario = await getOwnedScenario(userId, scenarioId);
   assertDraft(scenario);
-  if (!input.realInvoiceId && !(input.cardId && input.periodYear && input.periodMonth)) {
-    throw AppError.badRequest("Provide either realInvoiceId or cardId+periodYear+periodMonth");
-  }
-  return prisma.scenarioInvoicePayment.create({ data: { scenarioId, ...input } });
+  const transaction = await prisma.scenarioTransaction.findUnique({ where: { id: transactionId } });
+  if (!transaction || transaction.scenarioId !== scenarioId) throw AppError.notFound("Scenario transaction not found");
+  await prisma.scenarioTransaction.delete({ where: { id: transactionId } });
+}
+
+export async function removeScenarioPurchase(userId: string, scenarioId: string, purchaseId: string) {
+  const scenario = await getOwnedScenario(userId, scenarioId);
+  assertDraft(scenario);
+  const purchase = await prisma.scenarioPurchase.findUnique({ where: { id: purchaseId } });
+  if (!purchase || purchase.scenarioId !== scenarioId) throw AppError.notFound("Scenario purchase not found");
+  // Installments cascade via the FK.
+  await prisma.scenarioPurchase.delete({ where: { id: purchaseId } });
+}
+
+/** Thin ownership-checking wrapper around reports.service.ts's getDailyBalance (the actual overlay math lives there). */
+export async function getScenarioDailyBalance(userId: string, scenarioId: string, year: number, month: number) {
+  await getOwnedScenario(userId, scenarioId);
+  return getDailyBalance(userId, year, month, undefined, scenarioId);
+}
+
+export interface ScenarioShadowItem {
+  id: string;
+  kind: "transaction" | "purchase";
+  type: string;
+  description: string;
+  date: string;
+  amount: string;
+  categoryName: string | null;
+  categoryColor: string | null;
+}
+
+/**
+ * The real day's items (read-only here — a simulation never edits history)
+ * plus this scenario's own shadow rows for that day (removable — see
+ * removeScenarioTransaction/removeScenarioPurchase above).
+ */
+export async function getScenarioDayDetail(
+  userId: string,
+  scenarioId: string,
+  date: Date
+): Promise<{ real: DayDetailItem[]; shadow: ScenarioShadowItem[] }> {
+  await getOwnedScenario(userId, scenarioId);
+  const nextDay = new Date(date.getTime() + 24 * 60 * 60 * 1000);
+
+  const [real, transactions, purchases] = await Promise.all([
+    getDayDetail(userId, date),
+    prisma.scenarioTransaction.findMany({
+      where: { scenarioId, date: { gte: date, lt: nextDay } },
+      include: { category: true },
+    }),
+    prisma.scenarioPurchase.findMany({
+      where: { scenarioId, purchaseDate: { gte: date, lt: nextDay } },
+      include: { category: true },
+    }),
+  ]);
+
+  const shadow: ScenarioShadowItem[] = [
+    ...transactions.map((t) => ({
+      id: t.id,
+      kind: "transaction" as const,
+      type: t.type,
+      description: t.description?.trim() ? t.description : t.type,
+      date: t.date.toISOString().slice(0, 10),
+      amount: new Prisma.Decimal(t.amount).toFixed(2),
+      categoryName: t.category?.name ?? null,
+      categoryColor: t.category?.color ?? null,
+    })),
+    ...purchases.map((p) => ({
+      id: p.id,
+      kind: "purchase" as const,
+      type: "cartao",
+      description: p.description,
+      date: p.purchaseDate.toISOString().slice(0, 10),
+      amount: new Prisma.Decimal(p.amount).toFixed(2),
+      categoryName: p.category?.name ?? null,
+      categoryColor: p.category?.color ?? null,
+    })),
+  ];
+
+  return { real, shadow };
 }
 
 export interface ScenarioBudgetItemInput {
@@ -175,10 +244,9 @@ export async function confirmScenario(userId: string, scenarioId: string) {
   const scenario = await getOwnedScenario(userId, scenarioId);
   assertDraft(scenario);
 
-  const [transactions, purchases, invoicePayments, budgetItems] = await Promise.all([
+  const [transactions, purchases, budgetItems] = await Promise.all([
     prisma.scenarioTransaction.findMany({ where: { scenarioId } }),
     prisma.scenarioPurchase.findMany({ where: { scenarioId } }),
-    prisma.scenarioInvoicePayment.findMany({ where: { scenarioId } }),
     prisma.scenarioBudgetItem.findMany({ where: { scenarioId } }),
   ]);
 
@@ -207,26 +275,6 @@ export async function confirmScenario(userId: string, scenarioId: string) {
         categoryId: p.categoryId ?? undefined,
         installmentsCount: p.installmentsCount,
         knownCharges: p.knownCharges.toString(),
-      });
-    }
-
-    for (const payment of invoicePayments) {
-      let invoiceId = payment.realInvoiceId;
-      if (!invoiceId) {
-        if (!payment.cardId || !payment.periodYear || !payment.periodMonth) {
-          throw AppError.badRequest("Scenario payment is missing a target invoice");
-        }
-        const invoice = await findOrCreateInvoice(tx, userId, payment.cardId, {
-          year: payment.periodYear,
-          month: payment.periodMonth,
-        });
-        invoiceId = invoice.id;
-      }
-      await createPaymentInTx(tx, userId, invoiceId, {
-        accountId: payment.accountId,
-        paymentDate: payment.paymentDate,
-        amount: payment.amount.toString(),
-        interestAmount: payment.interestAmount.toString(),
       });
     }
 
