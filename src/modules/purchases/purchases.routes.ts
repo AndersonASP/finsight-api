@@ -50,6 +50,19 @@ purchasesRouter.post(
   })
 );
 
+const updateLabelsSchema = z.object({
+  description: z.string().min(1).optional(),
+  categoryId: z.string().uuid().nullable().optional(),
+});
+
+purchasesRouter.patch(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    const input = updateLabelsSchema.parse(req.body);
+    res.json(await purchasesService.updatePurchaseLabels(requireUserId(req), req.params.id, input));
+  })
+);
+
 const deleteScopeSchema = z.enum(["this", "future"]).optional();
 
 purchasesRouter.delete(

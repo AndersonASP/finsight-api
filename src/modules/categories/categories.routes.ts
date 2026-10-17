@@ -36,6 +36,16 @@ categoriesRouter.patch(
   })
 );
 
+const mergeSchema = z.object({ intoId: z.string().uuid() });
+
+categoriesRouter.post(
+  "/:id/merge",
+  asyncHandler(async (req, res) => {
+    const { intoId } = mergeSchema.parse(req.body);
+    res.json(await categoriesService.mergeCategory(requireUserId(req), req.params.id, intoId));
+  })
+);
+
 categoriesRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {

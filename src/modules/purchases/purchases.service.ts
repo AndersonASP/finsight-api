@@ -77,6 +77,24 @@ export async function getPurchase(userId: string, purchaseId: string) {
 }
 
 /**
+ * Only what doesn't touch money: description and tag. Amount, date, card or
+ * installments live in the generated installments/invoices — changing those
+ * means deleting and re-creating the purchase.
+ */
+export async function updatePurchaseLabels(
+  userId: string,
+  purchaseId: string,
+  input: { description?: string; categoryId?: string | null }
+) {
+  await getOwnedPurchase(userId, purchaseId);
+  if (input.categoryId) {
+    const category = await prisma.category.findUnique({ where: { id: input.categoryId } });
+    if (!category || category.userId !== userId) throw AppError.notFound("Category not found");
+  }
+  return prisma.purchase.update({ where: { id: purchaseId }, data: input });
+}
+
+/**
  * Creates the purchase and all of its installments, finding-or-creating each
  * installment's invoice as needed (RF-11: no duplication, every installment
  * linked back to the original purchase). Takes a transaction client so it can

@@ -43,3 +43,27 @@ export async function getCategoryTotal(userId: string, categoryId: string, year:
 
   return result._sum.amount ?? 0;
 }
+
+/**
+ * Moves everything tagged `fromId` — lançamentos, card purchases, their
+ * recurring series, previsão de diário items and simulations — to `intoId`,
+ * then deletes `fromId`. Deleting a tag alone would just untag all of it.
+ */
+export async function mergeCategory(userId: string, fromId: string, intoId: string) {
+  if (fromId === intoId) throw AppError.badRequest("Cannot merge a tag into itself");
+  await getOwnedCategory(userId, fromId);
+  const into = await getOwnedCategory(userId, intoId);
+  const move = { where: { categoryId: fromId }, data: { categoryId: intoId } };
+  const [transactions, purchases] = await prisma.$transaction([
+    prisma.transaction.updateMany(move),
+    prisma.purchase.updateMany(move),
+    prisma.recurringTransaction.updateMany(move),
+    prisma.recurringCardPurchase.updateMany(move),
+    prisma.budgetItem.updateMany(move),
+    prisma.scenarioTransaction.updateMany(move),
+    prisma.scenarioPurchase.updateMany(move),
+    prisma.scenarioBudgetItem.updateMany(move),
+    prisma.category.delete({ where: { id: fromId } }),
+  ]);
+  return { into, movedTransactions: transactions.count, movedPurchases: purchases.count };
+}
