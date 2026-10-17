@@ -70,5 +70,6 @@ export async function cleanupDatabase() {
   await prisma.account.deleteMany();
   await prisma.category.deleteMany();
   await prisma.savingsGoal.deleteMany();
+  await prisma.refreshToken.deleteMany();
   await prisma.user.deleteMany();
 }

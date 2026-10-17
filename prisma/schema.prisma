@@ -30,8 +30,25 @@ model User {
   recurringTransactions  RecurringTransaction[]
   debts                  Debt[]
   recurringCardPurchases RecurringCardPurchase[]
+  refreshTokens          RefreshToken[]
 
   @@map("users")
+}
+
+// One row per issued refresh token (the JWT's `jti`), so a session can be
+// revoked server-side on logout instead of staying valid until it expires.
+model RefreshToken {
+  id         String    @id @default(uuid())
+  userId     String    @map("user_id")
+  expiresAt  DateTime  @map("expires_at")
+  revokedAt  DateTime? @map("revoked_at")
+  lastUsedAt DateTime? @map("last_used_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
 }
 
 enum AccountType {

@@ -1,5 +1,6 @@
 import cors from "cors";
 import express from "express";
+import helmet from "helmet";
 import "./core/money/decimal-json.js";
 import { env } from "./core/config/env.js";
 import { authGuard } from "./core/http/auth-guard.js";
@@ -22,6 +23,12 @@ import { scenariosRouter } from "./modules/scenarios/scenarios.routes.js";
 import { transactionsRouter } from "./modules/transactions/transactions.routes.js";
 
 export const app = express();
+
+// Behind Render's load balancer every request arrives from the proxy's IP;
+// trusting one hop makes rate limiting key on the real client IP.
+if (env.NODE_ENV === "production") app.set("trust proxy", 1);
+
+app.use(helmet());
 
 app.use(cors({ origin: env.CORS_ORIGIN }));
 app.use(express.json());
