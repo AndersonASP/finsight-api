@@ -116,6 +116,23 @@ describe("insights: quanto dá para guardar", () => {
     expect(c.destino.detail).toContain("1,5 meses");
   });
 
+  it("doesn't call the reserve complete when there's no spending history to measure it", async () => {
+    const { auth } = await setup("1000.00");
+    const c = await capacity(auth);
+    expect(c.destino.kind).toBe("reserva");
+    expect(c.destino.detail).toContain("Ainda não há meses completos");
+  });
+
+  it("only suggests investing once the reserve covers 6 months", async () => {
+    const { auth, tx } = await setup("1000.00");
+    await request(app).post("/accounts").set(auth).send({ name: "Reserva", type: "savings_reserve", initialBalance: "13000.00" }).expect(201);
+    const last = futureYearMonth(-1);
+    await tx("saida", "2000.00", `${last.year}-${pad(last.month)}-15`);
+
+    const c = await capacity(auth);
+    expect(c.destino.kind).toBe("investir");
+  });
+
   it("a month already over has nothing left to move", async () => {
     const { auth } = await setup("1000.00");
     const past = futureYearMonth(-2);

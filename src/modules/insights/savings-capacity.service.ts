@@ -111,16 +111,23 @@ async function suggestDestination(userId: string, today: Date) {
   let reserve = ZERO;
   for (const account of reserveAccounts) reserve = reserve.plus(await getAccountBalance(userId, account.id, today));
   const avgCost = await averageMonthlyCost(userId, today);
-  if (avgCost && avgCost.greaterThan(0)) {
-    const months = reserve.dividedBy(avgCost);
-    if (months.lessThan(RESERVE_TARGET_MONTHS)) {
-      const missing = avgCost.times(RESERVE_TARGET_MONTHS).minus(reserve);
-      return {
-        kind: "reserva" as const,
-        title: "Reserva de emergência",
-        detail: `Ela cobre ${months.toFixed(1).replace(".", ",")} meses; o ideal são ${RESERVE_TARGET_MONTHS}. Faltam ${missing.toFixed(2)}.`,
-      };
-    }
+  // Without past spending there's no cost of living to size the reserve
+  // against — never claim it's complete; building it is still the next step.
+  if (!avgCost || avgCost.isZero()) {
+    return {
+      kind: "reserva" as const,
+      title: "Reserva de emergência",
+      detail: `Ainda não há meses completos de gastos para medir a reserva. O ideal é guardar ${RESERVE_TARGET_MONTHS} meses do seu custo de vida antes de investir.`,
+    };
+  }
+  const months = reserve.dividedBy(avgCost);
+  if (months.lessThan(RESERVE_TARGET_MONTHS)) {
+    const missing = avgCost.times(RESERVE_TARGET_MONTHS).minus(reserve);
+    return {
+      kind: "reserva" as const,
+      title: "Reserva de emergência",
+      detail: `Ela cobre ${months.toFixed(1).replace(".", ",")} meses; o ideal são ${RESERVE_TARGET_MONTHS}. Faltam ${missing.toFixed(2)}.`,
+    };
   }
   return {
     kind: "investir" as const,
