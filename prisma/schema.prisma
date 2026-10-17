@@ -32,6 +32,8 @@ model User {
   recurringCardPurchases RecurringCardPurchase[]
   refreshTokens          RefreshToken[]
   walletCardMappings     WalletCardMapping[]
+  assets                 Asset[]
+  netWorthSnapshots      NetWorthSnapshot[]
 
   @@map("users")
 }
@@ -207,8 +209,17 @@ model RecurringTransaction {
 enum DebtType {
   consignado
   emprestimo_pessoal
+  financiamento
   cartao_vencido
+  cheque_especial
   outro
+}
+
+/// How the outstanding amount is known: by the calendar (fixed monthly
+/// installments, nothing to register) or as a balance the user updates.
+enum DebtKind {
+  parcela_fixa
+  saldo_variavel
 }
 
 enum DebtStatus {
@@ -231,6 +242,16 @@ model Debt {
   installmentDueDay Int?       @map("installment_due_day")
   installmentsTotal Int?       @map("installments_total")
   installmentsPaid  Int        @default(0) @map("installments_paid")
+  kind                 DebtKind  @default(saldo_variavel)
+  // parcela_fixa: due date of installment #1 — installments paid so far are
+  // derived from the calendar, so no payment ever needs to be registered.
+  firstInstallmentDate DateTime? @map("first_installment_date") @db.Date
+  // Optional "valor para quitar hoje" from the bank, with the date it was read.
+  payoffAmount         Decimal?  @map("payoff_amount") @db.Decimal(14, 2)
+  payoffAmountAt       DateTime? @map("payoff_amount_at") @db.Date
+  // saldo_variavel: when currentBalance was last informed.
+  balanceUpdatedAt     DateTime? @map("balance_updated_at") @db.Date
+  monthlyInterestRate  Decimal?  @map("monthly_interest_rate") @db.Decimal(6, 3)
   notes             String?
   createdAt         DateTime   @default(now()) @map("created_at")
   updatedAt         DateTime   @updatedAt @map("updated_at")
@@ -592,4 +613,53 @@ model WalletCardMapping {
 
   @@unique([userId, walletName])
   @@map("wallet_card_mappings")
+}
+
+// ---------------------------------------------------------------------------
+// Patrimônio
+// ---------------------------------------------------------------------------
+
+enum AssetKind {
+  imovel
+  veiculo
+  a_receber
+  outro
+}
+
+// Something owned outside the accounts (a property, a car, money someone
+// owes you) — always an informed value with the date it was estimated.
+model Asset {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  kind      AssetKind
+  value     Decimal   @db.Decimal(14, 2)
+  valuedAt  DateTime  @map("valued_at") @db.Date
+  // Counts toward "patrimônio financeiro" (money that can actually be used).
+  isLiquid  Boolean   @default(false) @map("is_liquid")
+  notes     String?
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  @@map("assets")
+}
+
+// Net worth as of each month — informed values have no history of their
+// own, so the month's figure is frozen here (the current month is kept up
+// to date on every read).
+model NetWorthSnapshot {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  year        Int
+  month       Int
+  assets      Decimal  @db.Decimal(14, 2)
+  liabilities Decimal  @db.Decimal(14, 2)
+  netWorth    Decimal  @map("net_worth") @db.Decimal(14, 2)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, year, month])
+  @@map("net_worth_snapshots")
 }

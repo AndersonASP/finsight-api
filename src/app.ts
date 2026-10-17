@@ -23,6 +23,7 @@ import { reserveLoansRouter } from "./modules/reserve-loans/reserve-loans.routes
 import { savingsGoalsRouter } from "./modules/savings-goals/savings-goals.routes.js";
 import { scenariosRouter } from "./modules/scenarios/scenarios.routes.js";
 import { transactionsRouter } from "./modules/transactions/transactions.routes.js";
+import { assetsRouter, wealthRouter } from "./modules/wealth/wealth.routes.js";
 
 export const app = express();
 
@@ -58,6 +59,8 @@ app.use("/recurring-card-purchases", authGuard, recurringCardPurchasesRouter);
 app.use("/debts", authGuard, debtsRouter);
 app.use("/bills", authGuard, billsRouter);
 app.use("/quick-entries", authGuard, quickEntriesRouter);
+app.use("/wealth", authGuard, wealthRouter);
+app.use("/assets", authGuard, assetsRouter);
 app.use("/reset", authGuard, resetRouter);
 
 app.use(errorHandler);

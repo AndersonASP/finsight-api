@@ -1,18 +1,55 @@
-import { Prisma, type DebtStatus, type DebtType } from "@prisma/client";
+import { Prisma, type DebtKind, type DebtStatus, type DebtType } from "@prisma/client";
 import { prisma } from "../../core/db/prisma.js";
+import { startOfUtcDay } from "../../core/http/date.js";
 import { AppError } from "../../core/http/errors.js";
+import { installmentDueDate } from "../wealth/debt-outstanding.js";
 import { getOwnedAccount } from "../accounts/accounts.service.js";
 
 export interface DebtInput {
   creditor: string;
   type: DebtType;
   status?: DebtStatus;
+  kind?: DebtKind;
   originalAmount?: string;
-  currentBalance: string;
+  currentBalance?: string;
   installmentAmount?: string;
   installmentDueDay?: number;
   installmentsTotal?: number;
+  currentInstallment?: number;
+  firstInstallmentDate?: Date;
+  payoffAmount?: string | null;
+  monthlyInterestRate?: string | null;
   notes?: string;
+}
+
+/**
+ * "Estou na parcela X" → due date of installment #1: X is the installment
+ * whose due date falls in the current month, so #1 was X−1 months earlier.
+ */
+export function firstInstallmentDateFrom(currentInstallment: number, dueDay: number, today: Date): Date {
+  const thisMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+  return installmentDueDate(thisMonth, dueDay, -(currentInstallment - 1));
+}
+
+/** Turns the API input into Prisma data, deriving the dates the user never types. */
+function toDebtData(input: Partial<DebtInput>, today: Date) {
+  const { currentInstallment, payoffAmount, ...rest } = input;
+  const data: Prisma.DebtUncheckedUpdateInput = { ...rest };
+  if (currentInstallment != null) {
+    if (input.installmentDueDay == null) {
+      throw AppError.badRequest("installmentDueDay is required with currentInstallment");
+    }
+    if (input.installmentsTotal != null && currentInstallment > input.installmentsTotal) {
+      throw AppError.badRequest("currentInstallment cannot exceed installmentsTotal");
+    }
+    data.firstInstallmentDate = firstInstallmentDateFrom(currentInstallment, input.installmentDueDay, today);
+  }
+  if (input.currentBalance != null) data.balanceUpdatedAt = today;
+  if (payoffAmount !== undefined) {
+    data.payoffAmount = payoffAmount;
+    data.payoffAmountAt = payoffAmount == null ? null : today;
+  }
+  return data;
 }
 
 export interface CreatePaymentInput {
@@ -46,31 +83,39 @@ export async function getDebt(userId: string, debtId: string) {
 }
 
 export async function createDebt(userId: string, input: DebtInput) {
-  if (new Prisma.Decimal(input.currentBalance).lessThan(0)) {
+  if (input.currentBalance != null && new Prisma.Decimal(input.currentBalance).lessThan(0)) {
     throw AppError.badRequest("currentBalance cannot be negative");
   }
+  const kind = input.kind ?? (input.installmentsTotal != null && input.installmentAmount != null ? "parcela_fixa" : "saldo_variavel");
+  if (kind === "saldo_variavel" && input.currentBalance == null) {
+    throw AppError.badRequest("currentBalance is required for saldo_variavel");
+  }
+  if (kind === "parcela_fixa" && (input.installmentsTotal == null || input.installmentAmount == null)) {
+    throw AppError.badRequest("installmentsTotal and installmentAmount are required for parcela_fixa");
+  }
+  const today = startOfUtcDay(new Date());
+  const data = toDebtData({ ...input, kind }, today) as Prisma.DebtUncheckedCreateInput;
   return prisma.debt.create({
     data: {
+      ...data,
       userId,
       creditor: input.creditor,
       type: input.type,
       status: input.status ?? "em_dia",
-      originalAmount: input.originalAmount,
-      currentBalance: input.currentBalance,
-      installmentAmount: input.installmentAmount,
-      installmentDueDay: input.installmentDueDay,
-      installmentsTotal: input.installmentsTotal,
-      notes: input.notes,
+      currentBalance: input.currentBalance ?? "0",
+      balanceUpdatedAt: today,
     },
   });
 }
 
 export async function updateDebt(userId: string, debtId: string, input: Partial<DebtInput>) {
-  await getOwnedDebt(userId, debtId);
+  const debt = await getOwnedDebt(userId, debtId);
   if (input.currentBalance != null && new Prisma.Decimal(input.currentBalance).lessThan(0)) {
     throw AppError.badRequest("currentBalance cannot be negative");
   }
-  return prisma.debt.update({ where: { id: debtId }, data: input });
+  // "Parcela X" needs the due day even when only X changed.
+  const withDueDay = { ...input, installmentDueDay: input.installmentDueDay ?? debt.installmentDueDay ?? undefined };
+  return prisma.debt.update({ where: { id: debtId }, data: toDebtData(withDueDay, startOfUtcDay(new Date())) });
 }
 
 export async function deleteDebt(userId: string, debtId: string) {

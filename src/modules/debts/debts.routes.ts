@@ -7,20 +7,43 @@ import * as debtsService from "./debts.service.js";
 
 export const debtsRouter = Router();
 
-const debtTypeSchema = z.enum(["consignado", "emprestimo_pessoal", "cartao_vencido", "outro"]);
+const debtTypeSchema = z.enum([
+  "consignado",
+  "emprestimo_pessoal",
+  "financiamento",
+  "cartao_vencido",
+  "cheque_especial",
+  "outro",
+]);
 const debtStatusSchema = z.enum(["em_dia", "vencida", "negociada", "paga"]);
 
 const debtSchema = z.object({
   creditor: z.string().min(1),
   type: debtTypeSchema,
   status: debtStatusSchema.optional(),
+  kind: z.enum(["parcela_fixa", "saldo_variavel"]).optional(),
   originalAmount: z.string().optional(),
-  currentBalance: z.string(),
+  /** Required for saldo_variavel; ignored (kept at 0) for parcela_fixa. */
+  currentBalance: z.string().optional(),
   installmentAmount: z.string().optional(),
   installmentDueDay: z.number().int().min(1).max(31).optional(),
   installmentsTotal: z.number().int().min(1).optional(),
+  /** "Estou na parcela X" — the installment due this month (parcela_fixa). */
+  currentInstallment: z.number().int().min(1).optional(),
+  firstInstallmentDate: z.string().optional(),
+  payoffAmount: z.string().nullable().optional(),
+  monthlyInterestRate: z.string().nullable().optional(),
   notes: z.string().optional(),
 });
+
+function parseDebtDates(input: z.infer<typeof debtSchema>) {
+  return {
+    ...input,
+    firstInstallmentDate: input.firstInstallmentDate
+      ? parseDateParam(input.firstInstallmentDate, "firstInstallmentDate")
+      : undefined,
+  };
+}
 
 const createPaymentSchema = z.object({
   accountId: z.string().uuid(),
@@ -40,7 +63,7 @@ debtsRouter.get(
 debtsRouter.post(
   "/",
   asyncHandler(async (req, res) => {
-    const input = debtSchema.parse(req.body);
+    const input = parseDebtDates(debtSchema.parse(req.body));
     res.status(201).json(await debtsService.createDebt(requireUserId(req), input));
   })
 );
@@ -55,7 +78,7 @@ debtsRouter.get(
 debtsRouter.patch(
   "/:id",
   asyncHandler(async (req, res) => {
-    const input = debtSchema.partial().parse(req.body);
+    const input = parseDebtDates(debtSchema.partial().parse(req.body) as z.infer<typeof debtSchema>);
     res.json(await debtsService.updateDebt(requireUserId(req), req.params.id, input));
   })
 );

@@ -176,6 +176,27 @@ export async function getAccountBalance(userId: string, accountId: string, asOfD
     .minus(debtPaymentsFromHere._sum.amount ?? 0);
 }
 
+/**
+ * What an investment account is worth today. The ledger alone misses
+ * rendimento, so the last informed value (a balance snapshot) anchors it and
+ * only the movements dated after that snapshot (aportes/resgates) are added
+ * on top. Without any snapshot it falls back to the ledger balance.
+ * Saldos never uses this — it stays purely ledger-based.
+ */
+export async function getInvestmentValue(userId: string, accountId: string, today: Date) {
+  const snapshot = await prisma.accountBalanceSnapshot.findFirst({
+    where: { accountId, snapshotDate: { lte: today } },
+    orderBy: { snapshotDate: "desc" },
+  });
+  const ledgerToday = await getAccountBalance(userId, accountId, today);
+  if (!snapshot) return { value: ledgerToday, valuedAt: null as Date | null };
+  const ledgerAtSnapshot = await getAccountBalance(userId, accountId, snapshot.snapshotDate);
+  return {
+    value: new Prisma.Decimal(snapshot.balance).plus(ledgerToday.minus(ledgerAtSnapshot)),
+    valuedAt: snapshot.snapshotDate,
+  };
+}
+
 export async function createBalanceSnapshot(
   userId: string,
   accountId: string,
