@@ -3,6 +3,7 @@ import { asyncHandler } from "../../core/http/async-handler.js";
 import { requireUserId } from "../../core/http/auth-guard.js";
 import { AppError } from "../../core/http/errors.js";
 import { getSavingsCapacity } from "./savings-capacity.service.js";
+import { getSummary } from "./summary.service.js";
 
 export const insightsRouter = Router();
 
@@ -15,5 +16,13 @@ insightsRouter.get(
       throw AppError.badRequest("year and month query params are required (month 1-12)");
     }
     res.json(await getSavingsCapacity(requireUserId(req), year, month));
+  })
+);
+
+/** Compact figures for the home/lock screen widget. */
+insightsRouter.get(
+  "/summary",
+  asyncHandler(async (req, res) => {
+    res.json(await getSummary(requireUserId(req)));
   })
 );
