@@ -87,14 +87,18 @@ export async function createTransaction(userId: string, input: TransactionInput)
   });
 }
 
-export async function updateTransaction(userId: string, transactionId: string, input: Partial<TransactionInput>) {
+export async function updateTransaction(
+  userId: string,
+  transactionId: string,
+  input: Partial<Omit<TransactionInput, "categoryId">> & { categoryId?: string | null }
+) {
   const existing = await getOwnedTransaction(userId, transactionId);
   const merged: TransactionInput = {
     accountId: input.accountId ?? existing.accountId,
     type: input.type ?? existing.type,
     amount: input.amount ?? existing.amount.toString(),
     date: input.date ?? existing.date,
-    categoryId: input.categoryId !== undefined ? input.categoryId : (existing.categoryId ?? undefined),
+    categoryId: input.categoryId !== undefined ? (input.categoryId ?? undefined) : (existing.categoryId ?? undefined),
     description: input.description !== undefined ? input.description : (existing.description ?? undefined),
     counterpartAccountId:
       input.counterpartAccountId !== undefined

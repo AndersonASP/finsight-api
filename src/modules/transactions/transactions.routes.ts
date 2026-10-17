@@ -56,7 +56,11 @@ transactionsRouter.get(
 transactionsRouter.patch(
   "/:id",
   asyncHandler(async (req, res) => {
-    const input = createTransactionSchema.partial().parse(req.body);
+    // categoryId: null removes the tag.
+    const input = createTransactionSchema
+      .partial()
+      .extend({ categoryId: z.string().uuid().nullable().optional() })
+      .parse(req.body);
     const transaction = await transactionsService.updateTransaction(requireUserId(req), req.params.id, {
       ...input,
       date: input.date ? parseDateParam(input.date, "date") : undefined,

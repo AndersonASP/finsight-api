@@ -66,6 +66,16 @@ describe("organizing tags", () => {
     await request(app).post(`/categories/${a}/merge`).set(auth).send({ intoId: foreign }).expect(404);
   });
 
+  it("removes a lançamento's tag with categoryId null", async () => {
+    const { auth, accountId, tag } = await setup();
+    const t = await tag("X");
+    const tx = (
+      await request(app).post("/transactions").set(auth).send({ accountId, type: "diario", amount: "5.00", date: todayIso(), categoryId: t }).expect(201)
+    ).body;
+    const res = await request(app).patch(`/transactions/${tx.id}`).set(auth).send({ categoryId: null }).expect(200);
+    expect(res.body.categoryId).toBeNull();
+  });
+
   it("relabels a card purchase without touching its money", async () => {
     const { auth, cardId, tag } = await setup();
     const mercado = await tag("Mercado");
