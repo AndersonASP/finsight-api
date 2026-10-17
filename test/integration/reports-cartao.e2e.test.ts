@@ -92,6 +92,42 @@ describe("reports include card purchases without duplicating as a bank expense",
     expect(payTotals.cartao).toBe("200.00");
   });
 
+  it("a future-dated purchase lands in that future date's cycle", async () => {
+    const { token } = await createTestUser();
+    const auth = { Authorization: `Bearer ${token}` };
+    const accountId = (
+      await request(app).post("/accounts").set(auth).send({ name: "Conta", type: "checking", initialBalance: "1000.00" }).expect(201)
+    ).body.id;
+    const cardId = (
+      await request(app).post("/cards").set(auth).send({ name: "IAS Itaú", closingDay: 13, dueDay: 20, defaultPaymentAccountId: accountId }).expect(201)
+    ).body.id;
+    const pad = (n: number) => String(n).padStart(2, "0");
+
+    // Dated three months ahead, on the 5th (before closing) and the 20th (after).
+    const future = futureYearMonth(3);
+    const afterClosing = futureYearMonth(4);
+    const before = (
+      await request(app)
+        .post("/purchases")
+        .set(auth)
+        .send({ cardId, purchaseDate: `${future.year}-${pad(future.month)}-05`, description: "Antes", amount: "100.00" })
+        .expect(201)
+    ).body;
+    const after = (
+      await request(app)
+        .post("/purchases")
+        .set(auth)
+        .send({ cardId, purchaseDate: `${future.year}-${pad(future.month)}-20`, description: "Depois", amount: "50.00" })
+        .expect(201)
+    ).body;
+
+    expect(before.installments[0].dueDate.slice(0, 10)).toBe(`${future.year}-${pad(future.month)}-20`);
+    expect(after.installments[0].dueDate.slice(0, 10)).toBe(`${afterClosing.year}-${pad(afterClosing.month)}-20`);
+
+    const days = (await request(app).get(`/reports/daily-balance?year=${afterClosing.year}&month=${afterClosing.month}`).set(auth).expect(200)).body;
+    expect(days.find((d: { day: number }) => d.day === 20).cartao).toBe("50.00");
+  });
+
   it("the invoice debits the account in full exactly on the installment's due date, with no manual payment step", async () => {
     const { token } = await createTestUser();
     const accountRes = await request(app)
