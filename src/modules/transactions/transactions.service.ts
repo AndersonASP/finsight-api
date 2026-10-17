@@ -41,6 +41,12 @@ export async function getTransaction(userId: string, transactionId: string) {
   return getOwnedTransaction(userId, transactionId);
 }
 
+/** Toggles the visual "pago" check. Doesn't touch amount/date, so balances are unaffected. */
+export async function setTransactionPaid(userId: string, transactionId: string, paid: boolean) {
+  await getOwnedTransaction(userId, transactionId);
+  return prisma.transaction.update({ where: { id: transactionId }, data: { paidAt: paid ? new Date() : null } });
+}
+
 export interface ListTransactionsFilter {
   from?: Date;
   to?: Date;

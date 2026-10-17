@@ -7,6 +7,7 @@ import { authGuard } from "./core/http/auth-guard.js";
 import { errorHandler } from "./core/http/error-handler.js";
 import { accountsRouter } from "./modules/accounts/accounts.routes.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
+import { billsRouter } from "./modules/bills/bills.routes.js";
 import { budgetRouter } from "./modules/budget/budget.routes.js";
 import { cardsRouter } from "./modules/cards/cards.routes.js";
 import { categoriesRouter } from "./modules/categories/categories.routes.js";
@@ -54,6 +55,7 @@ app.use("/reserve-loans", authGuard, reserveLoansRouter);
 app.use("/recurring-transactions", authGuard, recurringTransactionsRouter);
 app.use("/recurring-card-purchases", authGuard, recurringCardPurchasesRouter);
 app.use("/debts", authGuard, debtsRouter);
+app.use("/bills", authGuard, billsRouter);
 app.use("/reset", authGuard, resetRouter);
 
 app.use(errorHandler);

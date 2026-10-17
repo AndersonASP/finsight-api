@@ -27,6 +27,16 @@ invoicesRouter.get(
   })
 );
 
+const paidSchema = z.object({ paid: z.boolean() });
+
+invoicesRouter.patch(
+  "/:id/paid",
+  asyncHandler(async (req, res) => {
+    const { paid } = paidSchema.parse(req.body);
+    res.json(await invoicesService.setInvoicePaid(requireUserId(req), req.params.id, paid));
+  })
+);
+
 const reassignSchema = z.object({ invoiceId: z.string().uuid() });
 
 export const installmentsRouter = Router();

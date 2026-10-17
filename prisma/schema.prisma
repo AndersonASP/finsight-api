@@ -143,6 +143,8 @@ model Transaction {
   recurringTransactionId String?               @map("recurring_transaction_id")
   recurringTransaction   RecurringTransaction? @relation(fields: [recurringTransactionId], references: [id], onDelete: Cascade)
   occurrenceIndex        Int?                  @map("occurrence_index")
+  // Visual "já paguei" check only — never read by any balance calculation.
+  paidAt                 DateTime?             @map("paid_at")
   createdAt              DateTime              @default(now()) @map("created_at")
   updatedAt              DateTime              @updatedAt @map("updated_at")
 
@@ -383,6 +385,8 @@ model Invoice {
   closingDate DateTime      @map("closing_date") @db.Date
   dueDate     DateTime      @map("due_date") @db.Date
   status      InvoiceStatus @default(open)
+  // Visual "já paguei" check only — never read by any balance calculation.
+  paidAt      DateTime?     @map("paid_at")
   createdAt   DateTime      @default(now()) @map("created_at")
   updatedAt   DateTime      @updatedAt @map("updated_at")
 

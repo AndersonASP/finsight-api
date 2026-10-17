@@ -65,6 +65,16 @@ transactionsRouter.patch(
   })
 );
 
+const paidSchema = z.object({ paid: z.boolean() });
+
+transactionsRouter.patch(
+  "/:id/paid",
+  asyncHandler(async (req, res) => {
+    const { paid } = paidSchema.parse(req.body);
+    res.json(await transactionsService.setTransactionPaid(requireUserId(req), req.params.id, paid));
+  })
+);
+
 const deleteScopeSchema = z.enum(["this", "future"]).optional();
 
 transactionsRouter.delete(

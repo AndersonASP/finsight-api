@@ -54,6 +54,12 @@ export async function getInvoiceDetail(userId: string, invoiceId: string) {
   return { ...invoice, ...totals, installments };
 }
 
+/** Toggles the visual "pago" check on an invoice. Purely informational — no balance code reads it. */
+export async function setInvoicePaid(userId: string, invoiceId: string, paid: boolean) {
+  await getOwnedInvoice(userId, invoiceId);
+  return prisma.invoice.update({ where: { id: invoiceId }, data: { paidAt: paid ? new Date() : null } });
+}
+
 export async function reassignInstallmentInvoice(userId: string, installmentId: string, newInvoiceId: string) {
   const installment = await prisma.installment.findUnique({ where: { id: installmentId }, include: { purchase: true } });
   if (!installment || installment.purchase.userId !== userId) throw AppError.notFound("Installment not found");
