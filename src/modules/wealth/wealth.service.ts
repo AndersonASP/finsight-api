@@ -5,10 +5,13 @@ import { AppError } from "../../core/http/errors.js";
 import { getAccountBalance, getInvestmentValue } from "../accounts/accounts.service.js";
 import { getMonthlyTotals } from "../reports/reports.service.js";
 import { computeLoanState } from "../reserve-loans/interest.js";
-import { getDebtOutstanding } from "./debt-outstanding.js";
+import { getDebtOutstanding, isExpensiveDebt } from "./debt-outstanding.js";
 
 const ZERO = new Prisma.Decimal(0);
 const DAY_MS = 86_400_000;
+
+/** A financial net worth change smaller than this (either way) reads as "estável". */
+export const STABLE_CHANGE_THRESHOLD = new Prisma.Decimal(50);
 
 /** After this many days an informed value is flagged "atualize". */
 const STALE_DAYS = {
@@ -116,8 +119,12 @@ async function debtGroups(userId: string, today: Date) {
   const debts = await prisma.debt.findMany({ where: { userId, status: { not: "paga" } }, orderBy: { createdAt: "asc" } });
   const parcelaFixa: WealthItem[] = [];
   const saldoVariavel: WealthItem[] = [];
+  let monthlyInterest = ZERO;
+  let expensiveDebt = ZERO;
   for (const debt of debts) {
     const outstanding = getDebtOutstanding(debt, today);
+    if (outstanding.monthlyInterestCost) monthlyInterest = monthlyInterest.plus(outstanding.monthlyInterestCost);
+    if (isExpensiveDebt(debt)) expensiveDebt = expensiveDebt.plus(outstanding.value);
     const item: WealthItem = {
       id: debt.id,
       kind: "debt",
@@ -142,7 +149,7 @@ async function debtGroups(userId: string, today: Date) {
     };
     (outstanding.installmentsTotal != null ? parcelaFixa : saldoVariavel).push(item);
   }
-  return { parcelaFixa, saldoVariavel, debts };
+  return { parcelaFixa, saldoVariavel, debts, monthlyInterest, expensiveDebt };
 }
 
 /**
@@ -205,9 +212,29 @@ export async function averageMonthlyCost(userId: string, today: Date) {
   return costs.reduce((a, b) => a.plus(b), ZERO).dividedBy(costs.length);
 }
 
+/**
+ * Average monthly result (entradas − custo de vida) over the last 3 complete
+ * months with any activity — how fast the financial net worth moves while
+ * there's no snapshot history yet. Economia is a transfer between the user's
+ * own accounts, so it doesn't count either way.
+ */
+export async function averageMonthlyResult(userId: string, today: Date) {
+  const thisMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+  const results: Prisma.Decimal[] = [];
+  for (let i = 1; i <= 3; i++) {
+    const month = addMonthsClamped(thisMonth, -i);
+    const totals = await getMonthlyTotals(userId, month.getUTCFullYear(), month.getUTCMonth() + 1);
+    const entradas = new Prisma.Decimal(totals.entradas);
+    const cost = new Prisma.Decimal(totals.saidas).plus(totals.diario).plus(totals.cartao);
+    if (entradas.greaterThan(0) || cost.greaterThan(0)) results.push(entradas.minus(cost));
+  }
+  if (results.length === 0) return null;
+  return results.reduce((a, b) => a.plus(b), ZERO).dividedBy(results.length);
+}
+
 export async function getWealth(userId: string, now = new Date()) {
   const today = startOfUtcDay(now);
-  const [{ disponivel, reserva, investimentos }, { aReceber, bens, assets }, { parcelaFixa, saldoVariavel }, cartao] =
+  const [{ disponivel, reserva, investimentos }, { aReceber, bens, assets }, { parcelaFixa, saldoVariavel, monthlyInterest, expensiveDebt }, cartao] =
     await Promise.all([
       accountGroups(userId, today),
       informedAssetGroups(userId, today),
@@ -243,13 +270,29 @@ export async function getWealth(userId: string, now = new Date()) {
   const month = today.getUTCMonth() + 1;
   await prisma.netWorthSnapshot.upsert({
     where: { userId_year_month: { userId, year, month } },
-    create: { userId, year, month, assets: totalAssets, liabilities: totalLiabilities, netWorth },
-    update: { assets: totalAssets, liabilities: totalLiabilities, netWorth },
+    create: { userId, year, month, assets: totalAssets, liabilities: totalLiabilities, netWorth, financialNetWorth },
+    update: { assets: totalAssets, liabilities: totalLiabilities, netWorth, financialNetWorth },
   });
   const previous = await prisma.netWorthSnapshot.findFirst({
     where: { userId, OR: [{ year: { lt: year } }, { year, month: { lt: month } }] },
     orderBy: [{ year: "desc" }, { month: "desc" }],
   });
+
+  // "Ficando mais rico ou mais pobre": the financial net worth (bens don't
+  // pay bills) against last month's snapshot, or — with no history yet —
+  // the average monthly result of the last months.
+  const previousFinancial =
+    previous?.financialNetWorth != null ? new Prisma.Decimal(previous.financialNetWorth) : null;
+  const avgResult = previousFinancial ? null : await averageMonthlyResult(userId, today);
+  const change = previousFinancial ? financialNetWorth.minus(previousFinancial) : avgResult;
+  const tendencia =
+    change == null
+      ? null
+      : change.abs().lessThan(STABLE_CHANGE_THRESHOLD)
+        ? "estavel"
+        : change.greaterThan(0)
+          ? "crescendo"
+          : "caindo";
 
   const allItems = [...assetGroups, ...liabilityGroups].flatMap((g) => g.items);
   return {
@@ -263,6 +306,17 @@ export async function getWealth(userId: string, now = new Date()) {
     reserveMonths: reserveMonths?.toFixed(1) ?? null,
     averageMonthlyCost: avgCost?.toFixed(2) ?? null,
     reserveLoansOwed: (await reserveLoansOwed(userId, today)).toFixed(2),
+    diagnostico: {
+      tendencia,
+      variacao: change?.toFixed(2) ?? null,
+      /** "historico": vs. `desde`'s snapshot; "media_mensal": average per month (no history yet). */
+      base: change == null ? null : previousFinancial ? "historico" : "media_mensal",
+      desde: previousFinancial && previous ? { year: previous.year, month: previous.month } : null,
+      jurosMensais: monthlyInterest.toFixed(2),
+      dividaCara: expensiveDebt.toFixed(2),
+      reserva: reserveTotal.toFixed(2),
+      disponivelNegativo: new Prisma.Decimal(group("disponivel", "", disponivel).total).lessThan(0),
+    },
     staleCount: allItems.filter((i) => i.stale).length,
     assets: assetGroups,
     liabilities: liabilityGroups,

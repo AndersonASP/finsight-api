@@ -2,7 +2,7 @@ import request from "supertest";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { app } from "../../src/app.js";
 import { prisma } from "../../src/core/db/prisma.js";
-import { cleanupDatabase, createTestUser, todayIso } from "./helpers.js";
+import { addMonthsIso, cleanupDatabase, createTestUser, todayIso } from "./helpers.js";
 
 type Group = { group: string; total: string; items: { id: string; name: string; value: string; source: string; stale: boolean; details?: Record<string, unknown> }[] };
 
@@ -180,5 +180,59 @@ describe("wealth (patrimônio)", () => {
       .set(auth)
       .send({ creditor: "X", type: "outro", installmentAmount: "10.00", installmentsTotal: 5, installmentDueDay: 5, currentInstallment: 6 })
       .expect(400);
+  });
+  describe("diagnóstico (ficando mais rico ou mais pobre)", () => {
+    const lastMonth = () => {
+      const [y, m] = addMonthsIso(todayIso(), -1).split("-").map(Number);
+      return { year: y, month: m };
+    };
+    const userIdOf = async () => (await prisma.user.findFirstOrThrow()).id;
+
+    it("with no history, uses the average monthly result of the last months", async () => {
+      const { auth, checking } = await setup();
+      const date = addMonthsIso(todayIso(), -1);
+      const tx = (type: string, amount: string) =>
+        request(app).post("/transactions").set(auth).send({ accountId: checking, type, amount, date }).expect(201);
+      await tx("entrada", "3000.00");
+      await tx("saida", "2000.00");
+
+      const { diagnostico } = await get(auth);
+      expect(diagnostico).toMatchObject({ tendencia: "crescendo", variacao: "1000.00", base: "media_mensal", desde: null });
+    });
+
+    it("compares the financial net worth (bens left out) with last month's snapshot", async () => {
+      const { auth } = await setup();
+      await request(app).post("/assets").set(auth).send({ name: "Carro", kind: "veiculo", value: "50000.00" }).expect(201);
+      // Financeiro hoje: 1000 conta + 6000 reserva = 7000; mês passado era 7500.
+      await prisma.netWorthSnapshot.create({
+        data: { userId: await userIdOf(), ...lastMonth(), assets: "7500", liabilities: "0", netWorth: "7500", financialNetWorth: "7500" },
+      });
+
+      const { diagnostico } = await get(auth);
+      expect(diagnostico).toMatchObject({ tendencia: "caindo", variacao: "-500.00", base: "historico", desde: lastMonth() });
+    });
+
+    it("reports interest paid and expensive debt, and no trend without data", async () => {
+      const { auth } = await setup();
+      await request(app)
+        .post("/debts")
+        .set(auth)
+        .send({ creditor: "Rotativo", type: "cartao_vencido", currentBalance: "2500.00", monthlyInterestRate: "12" })
+        .expect(201);
+      // An old snapshot without the financial figure doesn't count as history.
+      await prisma.netWorthSnapshot.create({
+        data: { userId: await userIdOf(), ...lastMonth(), assets: "1", liabilities: "0", netWorth: "1" },
+      });
+
+      const { diagnostico } = await get(auth);
+      expect(diagnostico).toMatchObject({
+        tendencia: null,
+        variacao: null,
+        jurosMensais: "300.00",
+        dividaCara: "2500.00",
+        reserva: "6000.00",
+        disponivelNegativo: false,
+      });
+    });
   });
 });

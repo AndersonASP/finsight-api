@@ -4,7 +4,7 @@ import { addMonthsClamped, daysInMonth, startOfUtcDay } from "../../core/http/da
 import { getAccountBalance } from "../accounts/accounts.service.js";
 import { getBudgetSummary } from "../budget/budget.service.js";
 import { getDailyBalance, getMonthlyTotals } from "../reports/reports.service.js";
-import { getDebtOutstanding } from "../wealth/debt-outstanding.js";
+import { getDebtOutstanding, isExpensiveDebt } from "../wealth/debt-outstanding.js";
 import { averageMonthlyCost } from "../wealth/wealth.service.js";
 
 const ZERO = new Prisma.Decimal(0);
@@ -12,7 +12,7 @@ const ZERO = new Prisma.Decimal(0);
 /** Savings target when the user hasn't set one (the app's 20–30% band floor). */
 export const DEFAULT_TARGET_PERCENT = 20;
 /** A debt at or above this monthly rate is paid off before saving. */
-export const EXPENSIVE_DEBT_MONTHLY_RATE = 3;
+export { EXPENSIVE_DEBT_MONTHLY_RATE } from "../wealth/debt-outstanding.js";
 /** Emergency reserve considered complete, in months of cost of living. */
 export const RESERVE_TARGET_MONTHS = 6;
 /** Saldo kept untouched when suggesting how much to move: days of diário. */
@@ -91,11 +91,7 @@ async function suggestDestination(userId: string, today: Date) {
   const debts = await prisma.debt.findMany({ where: { userId, status: { not: "paga" } } });
   const expensive = debts
     .map((debt) => ({ debt, outstanding: getDebtOutstanding(debt, today) }))
-    .filter(({ debt, outstanding }) => {
-      if (outstanding.value.isZero()) return false;
-      const rate = debt.monthlyInterestRate ? Number(debt.monthlyInterestRate) : null;
-      return rate != null ? rate >= EXPENSIVE_DEBT_MONTHLY_RATE : debt.type === "cartao_vencido" || debt.type === "cheque_especial";
-    })
+    .filter(({ debt, outstanding }) => !outstanding.value.isZero() && isExpensiveDebt(debt))
     .sort((a, b) => Number(b.debt.monthlyInterestRate ?? 99) - Number(a.debt.monthlyInterestRate ?? 99));
 
   if (expensive.length > 0) {

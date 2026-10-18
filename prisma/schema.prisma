@@ -233,31 +233,31 @@ enum DebtStatus {
 }
 
 model Debt {
-  id                String     @id @default(uuid())
-  userId            String     @map("user_id")
-  user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  creditor          String
-  type              DebtType
-  status            DebtStatus @default(em_dia)
-  originalAmount    Decimal?   @map("original_amount") @db.Decimal(14, 2)
-  currentBalance    Decimal    @map("current_balance") @db.Decimal(14, 2)
-  installmentAmount Decimal?   @map("installment_amount") @db.Decimal(14, 2)
-  installmentDueDay Int?       @map("installment_due_day")
-  installmentsTotal Int?       @map("installments_total")
-  installmentsPaid  Int        @default(0) @map("installments_paid")
-  kind                 DebtKind  @default(saldo_variavel)
+  id                   String     @id @default(uuid())
+  userId               String     @map("user_id")
+  user                 User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  creditor             String
+  type                 DebtType
+  status               DebtStatus @default(em_dia)
+  originalAmount       Decimal?   @map("original_amount") @db.Decimal(14, 2)
+  currentBalance       Decimal    @map("current_balance") @db.Decimal(14, 2)
+  installmentAmount    Decimal?   @map("installment_amount") @db.Decimal(14, 2)
+  installmentDueDay    Int?       @map("installment_due_day")
+  installmentsTotal    Int?       @map("installments_total")
+  installmentsPaid     Int        @default(0) @map("installments_paid")
+  kind                 DebtKind   @default(saldo_variavel)
   // parcela_fixa: due date of installment #1 — installments paid so far are
   // derived from the calendar, so no payment ever needs to be registered.
-  firstInstallmentDate DateTime? @map("first_installment_date") @db.Date
+  firstInstallmentDate DateTime?  @map("first_installment_date") @db.Date
   // Optional "valor para quitar hoje" from the bank, with the date it was read.
-  payoffAmount         Decimal?  @map("payoff_amount") @db.Decimal(14, 2)
-  payoffAmountAt       DateTime? @map("payoff_amount_at") @db.Date
+  payoffAmount         Decimal?   @map("payoff_amount") @db.Decimal(14, 2)
+  payoffAmountAt       DateTime?  @map("payoff_amount_at") @db.Date
   // saldo_variavel: when currentBalance was last informed.
-  balanceUpdatedAt     DateTime? @map("balance_updated_at") @db.Date
-  monthlyInterestRate  Decimal?  @map("monthly_interest_rate") @db.Decimal(6, 3)
-  notes             String?
-  createdAt         DateTime   @default(now()) @map("created_at")
-  updatedAt         DateTime   @updatedAt @map("updated_at")
+  balanceUpdatedAt     DateTime?  @map("balance_updated_at") @db.Date
+  monthlyInterestRate  Decimal?   @map("monthly_interest_rate") @db.Decimal(6, 3)
+  notes                String?
+  createdAt            DateTime   @default(now()) @map("created_at")
+  updatedAt            DateTime   @updatedAt @map("updated_at")
 
   payments DebtPayment[]
 
@@ -652,16 +652,19 @@ model Asset {
 // own, so the month's figure is frozen here (the current month is kept up
 // to date on every read).
 model NetWorthSnapshot {
-  id          String   @id @default(uuid())
-  userId      String   @map("user_id")
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  year        Int
-  month       Int
-  assets      Decimal  @db.Decimal(14, 2)
-  liabilities Decimal  @db.Decimal(14, 2)
-  netWorth    Decimal  @map("net_worth") @db.Decimal(14, 2)
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id                String   @id @default(uuid())
+  userId            String   @map("user_id")
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  year              Int
+  month             Int
+  assets            Decimal  @db.Decimal(14, 2)
+  liabilities       Decimal  @db.Decimal(14, 2)
+  netWorth          Decimal  @map("net_worth") @db.Decimal(14, 2)
+  /// netWorth minus illiquid bens — what "ficando mais rico/pobre" compares.
+  /// Null on snapshots taken before it was recorded.
+  financialNetWorth Decimal? @map("financial_net_worth") @db.Decimal(14, 2)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
 
   @@unique([userId, year, month])
   @@map("net_worth_snapshots")

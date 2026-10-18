@@ -9,6 +9,15 @@ export const PAYOFF_MAX_AGE_DAYS = 90;
 /** A saldo variável not updated for this long is flagged as stale. */
 export const VARIABLE_BALANCE_MAX_AGE_DAYS = 30;
 
+/** Monthly interest at or above this makes a debt "cara" (pay it off first). */
+export const EXPENSIVE_DEBT_MONTHLY_RATE = 3;
+
+/** Expensive debt: by its informed rate, or — with no rate — by its type (rotativo, cheque especial). */
+export function isExpensiveDebt(debt: Pick<Debt, "monthlyInterestRate" | "type">) {
+  const rate = debt.monthlyInterestRate ? Number(debt.monthlyInterestRate) : null;
+  return rate != null ? rate >= EXPENSIVE_DEBT_MONTHLY_RATE : debt.type === "cartao_vencido" || debt.type === "cheque_especial";
+}
+
 export interface DebtOutstanding {
   /** What counts toward the patrimônio's liabilities. */
   value: Prisma.Decimal;
