@@ -103,6 +103,72 @@ describe("recurring transactions", () => {
     expect(afterRes.body).toHaveLength(2);
   });
 
+  async function createSeries(token: string, accountId: string, count: number) {
+    await request(app)
+      .post("/recurring-transactions")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ accountId, type: "saida", amount: "20.00", description: "Academia", startDate: "2026-01-05", interval: "monthly", occurrenceCount: count })
+      .expect(201);
+    return listSorted(token);
+  }
+
+  async function listSorted(token: string) {
+    const res = await request(app).get("/transactions").set("Authorization", `Bearer ${token}`).expect(200);
+    return [...res.body].sort(
+      (a: { date: string }, b: { date: string }) => new Date(a.date).getTime() - new Date(b.date).getTime()
+    ) as Array<{ id: string; date: string; amount: string; description: string }>;
+  }
+
+  it("PATCH ?scope=future applies the change to this occurrence and every later one, keeping past ones", async () => {
+    const { token, accountId } = await setup();
+    const series = await createSeries(token, accountId, 4);
+
+    await request(app)
+      .patch(`/transactions/${series[1].id}?scope=future`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ amount: "25.00", date: "2026-02-10" })
+      .expect(200);
+
+    const after = await listSorted(token);
+    expect(after.map((t) => t.amount)).toEqual(["20.00", "25.00", "25.00", "25.00"]);
+    expect(after.map((t) => t.date.slice(0, 10))).toEqual(["2026-01-05", "2026-02-10", "2026-03-10", "2026-04-10"]);
+    expect(after.every((t) => t.description === "Academia")).toBe(true);
+  });
+
+  it("PATCH ?scope=future leaves fields that didn't change alone on later occurrences edited on their own", async () => {
+    const { token, accountId } = await setup();
+    const series = await createSeries(token, accountId, 3);
+
+    await request(app)
+      .patch(`/transactions/${series[2].id}`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ description: "Academia (mês com desconto)" })
+      .expect(200);
+    await request(app)
+      .patch(`/transactions/${series[0].id}?scope=future`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ amount: "30.00", description: "Academia" })
+      .expect(200);
+
+    const after = await listSorted(token);
+    expect(after.map((t) => t.amount)).toEqual(["30.00", "30.00", "30.00"]);
+    expect(after[2].description).toBe("Academia (mês com desconto)");
+  });
+
+  it("PATCH without scope only edits the one occurrence", async () => {
+    const { token, accountId } = await setup();
+    const series = await createSeries(token, accountId, 3);
+
+    await request(app)
+      .patch(`/transactions/${series[0].id}`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ amount: "99.00" })
+      .expect(200);
+
+    const after = await listSorted(token);
+    expect(after.map((t) => t.amount)).toEqual(["99.00", "20.00", "20.00"]);
+  });
+
   it("the account's current balance only counts occurrences already past, not every future one 'a perder de vista' eagerly generated", async () => {
     const { token, accountId } = await setup();
 

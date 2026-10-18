@@ -53,6 +53,8 @@ transactionsRouter.get(
   })
 );
 
+const scopeSchema = z.enum(["this", "future"]).optional();
+
 transactionsRouter.patch(
   "/:id",
   asyncHandler(async (req, res) => {
@@ -61,10 +63,16 @@ transactionsRouter.patch(
       .partial()
       .extend({ categoryId: z.string().uuid().nullable().optional() })
       .parse(req.body);
-    const transaction = await transactionsService.updateTransaction(requireUserId(req), req.params.id, {
-      ...input,
-      date: input.date ? parseDateParam(input.date, "date") : undefined,
-    });
+    const scope = scopeSchema.parse(req.query.scope);
+    const transaction = await transactionsService.updateTransaction(
+      requireUserId(req),
+      req.params.id,
+      {
+        ...input,
+        date: input.date ? parseDateParam(input.date, "date") : undefined,
+      },
+      scope
+    );
     res.json(transaction);
   })
 );
@@ -79,12 +87,10 @@ transactionsRouter.patch(
   })
 );
 
-const deleteScopeSchema = z.enum(["this", "future"]).optional();
-
 transactionsRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
-    const scope = deleteScopeSchema.parse(req.query.scope);
+    const scope = scopeSchema.parse(req.query.scope);
     await transactionsService.deleteTransaction(requireUserId(req), req.params.id, scope);
     res.status(204).send();
   })

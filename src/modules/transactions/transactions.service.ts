@@ -1,4 +1,4 @@
-import type { TransactionType } from "@prisma/client";
+import type { Prisma, TransactionType } from "@prisma/client";
 import { prisma } from "../../core/db/prisma.js";
 import { AppError } from "../../core/http/errors.js";
 import { getOwnedAccount } from "../accounts/accounts.service.js";
@@ -87,10 +87,20 @@ export async function createTransaction(userId: string, input: TransactionInput)
   });
 }
 
+/**
+ * `scope: "future"` only does something special when this transaction is
+ * part of a recurring series: the fields that actually changed on this
+ * occurrence are also applied to every later one (by `occurrenceIndex`, as
+ * in deleteTransaction), leaving past occurrences — and fields left
+ * untouched, which a later occurrence may have had edited on its own — as
+ * they were. A date change shifts each later occurrence by the same number
+ * of days. Otherwise it just updates the one row.
+ */
 export async function updateTransaction(
   userId: string,
   transactionId: string,
-  input: Partial<Omit<TransactionInput, "categoryId">> & { categoryId?: string | null }
+  input: Partial<Omit<TransactionInput, "categoryId">> & { categoryId?: string | null },
+  scope: "this" | "future" = "this"
 ) {
   const existing = await getOwnedTransaction(userId, transactionId);
   const merged: TransactionInput = {
@@ -107,18 +117,48 @@ export async function updateTransaction(
   };
   await validateAccounts(userId, merged);
 
-  return prisma.transaction.update({
-    where: { id: transactionId },
-    data: {
-      accountId: merged.accountId,
-      counterpartAccountId: merged.counterpartAccountId ?? null,
-      type: merged.type,
-      amount: merged.amount,
-      categoryId: merged.categoryId ?? null,
-      description: merged.description,
-      date: merged.date,
-    },
-  });
+  const data = {
+    accountId: merged.accountId,
+    counterpartAccountId: merged.counterpartAccountId ?? null,
+    type: merged.type,
+    amount: merged.amount,
+    categoryId: merged.categoryId ?? null,
+    description: merged.description,
+    date: merged.date,
+  };
+
+  if (scope !== "future" || !existing.recurringTransactionId || existing.occurrenceIndex == null) {
+    return prisma.transaction.update({ where: { id: transactionId }, data });
+  }
+
+  const changed: Prisma.TransactionUncheckedUpdateManyInput = {};
+  if (data.accountId !== existing.accountId) changed.accountId = data.accountId;
+  if (data.counterpartAccountId !== existing.counterpartAccountId) changed.counterpartAccountId = data.counterpartAccountId;
+  if (data.type !== existing.type) changed.type = data.type;
+  if (!existing.amount.equals(data.amount)) changed.amount = data.amount;
+  if (data.categoryId !== existing.categoryId) changed.categoryId = data.categoryId;
+  if ((data.description ?? null) !== existing.description) changed.description = data.description ?? null;
+  const dayShift = Math.round((data.date.getTime() - existing.date.getTime()) / 86_400_000);
+
+  const later = {
+    userId,
+    recurringTransactionId: existing.recurringTransactionId,
+    occurrenceIndex: { gt: existing.occurrenceIndex },
+  };
+  const [updated] = await prisma.$transaction([
+    prisma.transaction.update({ where: { id: transactionId }, data }),
+    prisma.transaction.updateMany({ where: later, data: changed }),
+    ...(dayShift !== 0
+      ? [
+          prisma.$executeRaw`
+            UPDATE transactions SET date = date + ${dayShift}::int, updated_at = now()
+            WHERE user_id = ${userId}
+              AND recurring_transaction_id = ${existing.recurringTransactionId}
+              AND occurrence_index > ${existing.occurrenceIndex}`,
+        ]
+      : []),
+  ]);
+  return updated;
 }
 
 /**
