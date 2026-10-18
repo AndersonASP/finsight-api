@@ -83,6 +83,49 @@ describe("day detail (drill-down from a day's saldo)", () => {
     expect(installmentItem.installment).toEqual({ sequence: 1, count: 17 });
   });
 
+  it("tags recurring items with their position and the series length (null when open-ended), cash and card alike", async () => {
+    const { token } = await createTestUser();
+    const auth = { Authorization: `Bearer ${token}` };
+    const account = await request(app).post("/accounts").set(auth).send({ name: "Conta", type: "checking" }).expect(201);
+    const card = await request(app)
+      .post("/cards")
+      .set(auth)
+      .send({ name: "Cartão", closingDay: 28, dueDay: 10, defaultPaymentAccountId: account.body.id })
+      .expect(201);
+
+    const recurring = (body: object) => request(app).post("/recurring-transactions").set(auth).send(body).expect(201);
+    await recurring({ accountId: account.body.id, type: "saida", amount: "100.00", description: "Curso", startDate: "2026-01-05", interval: "monthly", occurrenceCount: 5 });
+    await recurring({ accountId: account.body.id, type: "saida", amount: "50.00", description: "Academia", startDate: "2026-01-05", interval: "monthly", isOpenEnded: true });
+    const subscription = (body: object) => request(app).post("/recurring-card-purchases").set(auth).send(body).expect(201);
+    await subscription({ cardId: card.body.id, description: "Revista", amount: "20.00", startDate: "2026-01-05", occurrenceCount: 3 });
+    await subscription({ cardId: card.body.id, description: "Streaming", amount: "30.00", startDate: "2026-01-05", isOpenEnded: true });
+
+    const res = await request(app).get("/reports/day-detail?from=2026-02-01&to=2026-02-28").set(auth).expect(200);
+    const byDescription = (d: string) => res.body.find((i: { description: string }) => i.description === d);
+
+    expect(byDescription("Curso").recurring).toMatchObject({ occurrenceIndex: 1, count: 5 });
+    expect(byDescription("Academia").recurring).toMatchObject({ occurrenceIndex: 1, count: null });
+    // Purchase on 2026-01-05 (before closing 28) -> invoice due 2026-02-10.
+    expect(byDescription("Revista").recurring).toMatchObject({ occurrenceIndex: 0, count: 3 });
+    expect(byDescription("Streaming").recurring).toMatchObject({ occurrenceIndex: 0, count: null });
+  });
+
+  it("a 'esta e as futuras' delete shortens the series count shown on the remaining occurrences", async () => {
+    const { token } = await createTestUser();
+    const auth = { Authorization: `Bearer ${token}` };
+    const account = await request(app).post("/accounts").set(auth).send({ name: "Conta", type: "checking" }).expect(201);
+    await request(app)
+      .post("/recurring-transactions")
+      .set(auth)
+      .send({ accountId: account.body.id, type: "saida", amount: "100.00", startDate: "2026-01-05", interval: "monthly", occurrenceCount: 5 })
+      .expect(201);
+    const march = await request(app).get("/reports/day-detail?date=2026-03-05").set(auth).expect(200);
+    await request(app).delete(`/transactions/${march.body[0].id}?scope=future`).set(auth).expect(204);
+
+    const res = await request(app).get("/reports/day-detail?date=2026-02-05").set(auth).expect(200);
+    expect(res.body[0].recurring).toMatchObject({ occurrenceIndex: 1, count: 2 });
+  });
+
   it("returns an empty list for a day with no activity", async () => {
     const { token } = await createTestUser();
     const res = await request(app)

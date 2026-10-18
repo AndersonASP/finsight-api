@@ -403,7 +403,13 @@ export interface DayDetailItem {
   categoryName: string | null;
   categoryColor: string | null;
   installment: { sequence: number; count: number } | null;
-  recurring: { seriesId: string; occurrenceIndex: number } | null;
+  /**
+   * `count` is the series' current length (highest occurrence still there
+   * + 1, so a "esta e as futuras" delete shortens it), or null for an
+   * open-ended ("a perder de vista") series — the UI shows "2/5" vs. just a
+   * recurring mark.
+   */
+  recurring: { seriesId: string; occurrenceIndex: number; count: number | null } | null;
   /** The visual "pago" check — only for recurring saídas (the bills checklist), null otherwise. */
   paid: boolean | null;
 }
@@ -429,6 +435,47 @@ export async function getDayDetail(userId: string, date: Date, toInclusive: Date
     }),
   ]);
 
+  const transactionSeriesIds = [
+    ...new Set(transactions.flatMap((t) => (t.recurringTransactionId ? [t.recurringTransactionId] : []))),
+  ];
+  const cardSeriesIds = [
+    ...new Set(
+      installments.flatMap((i) => (i.purchase.recurringCardPurchaseId ? [i.purchase.recurringCardPurchaseId] : []))
+    ),
+  ];
+  const [transactionSeries, transactionSeriesMax, cardSeries, cardSeriesMax] = await Promise.all([
+    prisma.recurringTransaction.findMany({
+      where: { id: { in: transactionSeriesIds } },
+      select: { id: true, isOpenEnded: true },
+    }),
+    prisma.transaction.groupBy({
+      by: ["recurringTransactionId"],
+      where: { userId, recurringTransactionId: { in: transactionSeriesIds } },
+      _max: { occurrenceIndex: true },
+    }),
+    prisma.recurringCardPurchase.findMany({
+      where: { id: { in: cardSeriesIds } },
+      select: { id: true, isOpenEnded: true },
+    }),
+    prisma.purchase.groupBy({
+      by: ["recurringCardPurchaseId"],
+      where: { userId, recurringCardPurchaseId: { in: cardSeriesIds } },
+      _max: { occurrenceIndex: true },
+    }),
+  ]);
+  const seriesCount = new Map<string, number | null>();
+  for (const series of [...transactionSeries, ...cardSeries]) {
+    if (series.isOpenEnded) seriesCount.set(series.id, null);
+  }
+  for (const row of transactionSeriesMax) {
+    const id = row.recurringTransactionId!;
+    if (!seriesCount.has(id)) seriesCount.set(id, (row._max.occurrenceIndex ?? 0) + 1);
+  }
+  for (const row of cardSeriesMax) {
+    const id = row.recurringCardPurchaseId!;
+    if (!seriesCount.has(id)) seriesCount.set(id, (row._max.occurrenceIndex ?? 0) + 1);
+  }
+
   const items: DayDetailItem[] = [];
 
   for (const t of transactions) {
@@ -444,7 +491,11 @@ export async function getDayDetail(userId: string, date: Date, toInclusive: Date
       installment: null,
       recurring:
         t.recurringTransactionId != null && t.occurrenceIndex != null
-          ? { seriesId: t.recurringTransactionId, occurrenceIndex: t.occurrenceIndex }
+          ? {
+              seriesId: t.recurringTransactionId,
+              occurrenceIndex: t.occurrenceIndex,
+              count: seriesCount.get(t.recurringTransactionId) ?? null,
+            }
           : null,
       paid: t.type === "saida" && t.recurringTransactionId != null ? t.paidAt !== null : null,
     });
@@ -468,7 +519,11 @@ export async function getDayDetail(userId: string, date: Date, toInclusive: Date
       installment: { sequence: installment.sequence, count: purchase.installmentsCount },
       recurring:
         purchase.recurringCardPurchaseId != null && purchase.occurrenceIndex != null
-          ? { seriesId: purchase.recurringCardPurchaseId, occurrenceIndex: purchase.occurrenceIndex }
+          ? {
+              seriesId: purchase.recurringCardPurchaseId,
+              occurrenceIndex: purchase.occurrenceIndex,
+              count: seriesCount.get(purchase.recurringCardPurchaseId) ?? null,
+            }
           : null,
       paid: null,
     });
