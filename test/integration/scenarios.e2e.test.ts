@@ -82,6 +82,26 @@ describe("scenarios / simulation (RF-13)", () => {
     expect(rejected.status).toBe(409); // discarded scenarios are no longer editable
   });
 
+  it("DELETE ?permanent=true removes a scenario from the list, even a confirmed one, keeping its real rows", async () => {
+    const { token, accountId, scenarioId } = await setup();
+    const auth = { Authorization: `Bearer ${token}` };
+
+    await request(app)
+      .post(`/scenarios/${scenarioId}/transactions`)
+      .set(auth)
+      .send({ accountId, type: "saida", amount: "300.00", date: "2026-06-05" })
+      .expect(201);
+    await request(app).post(`/scenarios/${scenarioId}/confirm`).set(auth).expect(200);
+
+    await request(app).delete(`/scenarios/${scenarioId}?permanent=true`).set(auth).expect(204);
+
+    const list = await request(app).get("/scenarios").set(auth).expect(200);
+    expect(list.body).toEqual([]);
+    await request(app).get(`/scenarios/${scenarioId}`).set(auth).expect(404);
+    const realBalance = await request(app).get(`/accounts/${accountId}/balance`).set(auth).expect(200);
+    expect(realBalance.body.balance).toBe("700.00");
+  });
+
   it("a projection identifies a future deficit and its impact on the savings percentage", async () => {
     const { token, accountId, scenarioId } = await setup();
 

@@ -36,7 +36,13 @@ scenariosRouter.get(
 scenariosRouter.delete(
   "/:id",
   asyncHandler(async (req, res) => {
-    await scenariosService.discardScenario(requireUserId(req), req.params.id);
+    // Plain DELETE keeps the historical meaning (discard a draft, keeping
+    // the row as a record); `?permanent=true` removes it from the list.
+    if (req.query.permanent === "true") {
+      await scenariosService.deleteScenario(requireUserId(req), req.params.id);
+    } else {
+      await scenariosService.discardScenario(requireUserId(req), req.params.id);
+    }
     res.status(204).send();
   })
 );

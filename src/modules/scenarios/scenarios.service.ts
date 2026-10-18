@@ -238,6 +238,16 @@ export async function discardScenario(userId: string, scenarioId: string) {
 }
 
 /**
+ * Removes the scenario for good, whatever its status — its shadow rows
+ * cascade. A confirmed scenario's real rows were created independently of
+ * it (no FK back), so they stay.
+ */
+export async function deleteScenario(userId: string, scenarioId: string) {
+  await getOwnedScenario(userId, scenarioId);
+  await prisma.scenario.delete({ where: { id: scenarioId } });
+}
+
+/**
  * Materializes every shadow row into the real tables, reusing the exact same
  * domain services (purchase/payment creation) a direct API call would use —
  * in one transaction, so a mid-way failure leaves real data untouched.
