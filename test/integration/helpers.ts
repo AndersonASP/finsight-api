@@ -47,6 +47,7 @@ export function futureYearMonth(monthsAhead: number): { year: number; month: num
 }
 
 export async function cleanupDatabase() {
+  await prisma.wishlistItem.deleteMany();
   await prisma.scenarioBudgetItem.deleteMany();
   await prisma.scenarioInstallment.deleteMany();
   await prisma.scenarioPurchase.deleteMany();

@@ -37,6 +37,7 @@ model User {
   walletCardMappings     WalletCardMapping[]
   assets                 Asset[]
   netWorthSnapshots      NetWorthSnapshot[]
+  wishlistItems          WishlistItem[]
 
   @@map("users")
 }
@@ -668,4 +669,25 @@ model NetWorthSnapshot {
 
   @@unique([userId, year, month])
   @@map("net_worth_snapshots")
+}
+
+// ---------------------------------------------------------------------------
+// "Quero comprar" — purchases the user is thinking about. Nothing here moves
+// money: each item is re-simulated ("E se?") on read, so the app can tell
+// when it starts to fit without breaking the savings target.
+// ---------------------------------------------------------------------------
+
+model WishlistItem {
+  id                       String   @id @default(uuid())
+  userId                   String   @map("user_id")
+  user                     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  description              String
+  amount                   Decimal  @db.Decimal(14, 2)
+  pixDiscountPercent       Decimal? @map("pix_discount_percent") @db.Decimal(5, 2)
+  interestFreeInstallments Int      @default(1) @map("interest_free_installments")
+  createdAt                DateTime @default(now()) @map("created_at")
+  updatedAt                DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@map("wishlist_items")
 }

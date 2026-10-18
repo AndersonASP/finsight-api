@@ -27,6 +27,7 @@ import { savingsGoalsRouter } from "./modules/savings-goals/savings-goals.routes
 import { scenariosRouter } from "./modules/scenarios/scenarios.routes.js";
 import { transactionsRouter } from "./modules/transactions/transactions.routes.js";
 import { assetsRouter, wealthRouter } from "./modules/wealth/wealth.routes.js";
+import { wishlistRouter } from "./modules/wishlist/wishlist.routes.js";
 
 export const app = express();
 
@@ -76,6 +77,7 @@ app.use("/quick-entries", ...authed, quickEntriesRouter);
 app.use("/wealth", ...authed, wealthRouter);
 app.use("/assets", ...authed, assetsRouter);
 app.use("/insights", ...authed, insightsRouter);
+app.use("/wishlist", ...authed, wishlistRouter);
 app.use("/reset", ...authed, resetRouter);
 
 app.use(errorHandler);

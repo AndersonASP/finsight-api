@@ -10,6 +10,7 @@ import { prisma } from "../../core/db/prisma.js";
  */
 export async function resetUserData(userId: string) {
   await prisma.$transaction([
+    prisma.wishlistItem.deleteMany({ where: { userId } }),
     prisma.scenarioBudgetItem.deleteMany({ where: { scenario: { userId } } }),
     prisma.scenarioInstallment.deleteMany({ where: { scenarioPurchase: { scenario: { userId } } } }),
     prisma.scenarioPurchase.deleteMany({ where: { scenario: { userId } } }),

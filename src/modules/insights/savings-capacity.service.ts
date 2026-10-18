@@ -84,10 +84,25 @@ async function topOverspending(userId: string, year: number, month: number, elap
 }
 
 /**
+ * How many months of cost of living the `savings_reserve` accounts cover.
+ * `meses` is null while there's no complete month of spending to measure.
+ */
+export async function getReserveStatus(userId: string, today: Date) {
+  const reserveAccounts = await prisma.account.findMany({ where: { userId, isArchived: false, type: "savings_reserve" } });
+  let saldo = ZERO;
+  for (const account of reserveAccounts) saldo = saldo.plus(await getAccountBalance(userId, account.id, today));
+  const avgCost = await averageMonthlyCost(userId, today);
+  if (!avgCost || avgCost.isZero()) return { saldo, custoMensal: null, meses: null, completa: false, falta: ZERO };
+  const meses = saldo.dividedBy(avgCost);
+  const completa = !meses.lessThan(RESERVE_TARGET_MONTHS);
+  return { saldo, custoMensal: avgCost, meses, completa, falta: completa ? ZERO : avgCost.times(RESERVE_TARGET_MONTHS).minus(saldo) };
+}
+
+/**
  * Where the money saved this month should go first — the classic order:
  * expensive debt, then a 6-month emergency reserve, then investing.
  */
-async function suggestDestination(userId: string, today: Date) {
+export async function suggestDestination(userId: string, today: Date) {
   const debts = await prisma.debt.findMany({ where: { userId, status: { not: "paga" } } });
   const expensive = debts
     .map((debt) => ({ debt, outstanding: getDebtOutstanding(debt, today) }))
@@ -100,30 +115,26 @@ async function suggestDestination(userId: string, today: Date) {
     return {
       kind: "divida" as const,
       title: `Quitar ${debt.creditor}`,
+      creditor: debt.creditor,
       detail: `Dívida cara (${rate}): cada real que você paga nela rende mais que qualquer investimento. Falta ${outstanding.value.toFixed(2)}.`,
     };
   }
 
-  const reserveAccounts = await prisma.account.findMany({ where: { userId, isArchived: false, type: "savings_reserve" } });
-  let reserve = ZERO;
-  for (const account of reserveAccounts) reserve = reserve.plus(await getAccountBalance(userId, account.id, today));
-  const avgCost = await averageMonthlyCost(userId, today);
+  const reserve = await getReserveStatus(userId, today);
   // Without past spending there's no cost of living to size the reserve
   // against — never claim it's complete; building it is still the next step.
-  if (!avgCost || avgCost.isZero()) {
+  if (reserve.meses == null) {
     return {
       kind: "reserva" as const,
       title: "Reserva de emergência",
       detail: `Ainda não há meses completos de gastos para medir a reserva. O ideal é guardar ${RESERVE_TARGET_MONTHS} meses do seu custo de vida antes de investir.`,
     };
   }
-  const months = reserve.dividedBy(avgCost);
-  if (months.lessThan(RESERVE_TARGET_MONTHS)) {
-    const missing = avgCost.times(RESERVE_TARGET_MONTHS).minus(reserve);
+  if (!reserve.completa) {
     return {
       kind: "reserva" as const,
       title: "Reserva de emergência",
-      detail: `Ela cobre ${months.toFixed(1).replace(".", ",")} meses; o ideal são ${RESERVE_TARGET_MONTHS}. Faltam ${missing.toFixed(2)}.`,
+      detail: `Ela cobre ${reserve.meses.toFixed(1).replace(".", ",")} meses; o ideal são ${RESERVE_TARGET_MONTHS}. Faltam ${reserve.falta.toFixed(2)}.`,
     };
   }
   return {
@@ -145,6 +156,47 @@ async function suggestDestination(userId: string, today: Date) {
  * Compared honestly against the target (savings goal, else 20%).
  */
 export async function getSavingsCapacity(userId: string, year: number, month: number) {
+  const c = await computeMonthCapacity(userId, year, month);
+  const today = startOfUtcDay(new Date());
+  const fraction = c.numDays > 0 ? c.elapsedDays / c.numDays : 0;
+  const [overspending, destino] = await Promise.all([
+    c.elapsedDays > 0 && c.faltaParaMeta.greaterThan(0) ? topOverspending(userId, year, month, fraction) : Promise.resolve([]),
+    suggestDestination(userId, today),
+  ]);
+
+  const money = (d: Prisma.Decimal) => d.toFixed(2);
+  return {
+    year,
+    month,
+    isPast: c.isPast,
+    isFuture: c.isFuture,
+    entradas: money(c.entradas),
+    saidas: money(c.saidas),
+    cartao: money(c.cartao),
+    diarioReal: money(c.diarioReal),
+    diarioPrevisto: money(c.diarioPrevisto),
+    economiaFeita: money(c.economiaFeita),
+    sobraProjetada: money(c.sobraProjetada),
+    menorSaldoProjetado: c.minSaldo ? money(c.minSaldo) : null,
+    folga: money(c.folga),
+    podeGuardarAgora: money(c.podeGuardarAgora),
+    limitadoPor: c.limitedBy,
+    totalPossivel: money(c.totalPossivel),
+    percentPossivel: pct(c.totalPossivel, c.entradas).toFixed(1),
+    metaPercent: c.metaPercent.toFixed(0),
+    metaValor: money(c.metaValor),
+    faltaParaMeta: money(c.faltaParaMeta),
+    overspending,
+    destino,
+  };
+}
+
+/**
+ * The numbers behind getSavingsCapacity, without the extras (overspending,
+ * destination) — cheap enough to run for every month of a simulation. Also
+ * hands back the month's daily saldo it was computed from.
+ */
+export async function computeMonthCapacity(userId: string, year: number, month: number) {
   const today = startOfUtcDay(new Date());
   const monthStart = new Date(Date.UTC(year, month - 1, 1));
   const monthEnd = new Date(Date.UTC(year, month, 1));
@@ -190,35 +242,26 @@ export async function getSavingsCapacity(userId: string, year: number, month: nu
   const limitedBy =
     isPast ? "mes_encerrado" : teto && teto.lessThan(sobraProjetada) ? "saldo" : "sobra";
 
-  const fraction = numDays > 0 ? elapsedDays / numDays : 0;
-  const [overspending, destino] = await Promise.all([
-    elapsedDays > 0 && faltaParaMeta.greaterThan(0) ? topOverspending(userId, year, month, fraction) : Promise.resolve([]),
-    suggestDestination(userId, today),
-  ]);
-
-  const money = (d: Prisma.Decimal) => d.toFixed(2);
   return {
-    year,
-    month,
     isPast,
     isFuture,
-    entradas: money(entradas),
-    saidas: money(saidas),
-    cartao: money(cartao),
-    diarioReal: money(diarioReal),
-    diarioPrevisto: money(diarioPrevisto),
-    economiaFeita: money(economiaFeita),
-    sobraProjetada: money(sobraProjetada),
-    menorSaldoProjetado: minSaldo ? money(minSaldo) : null,
-    folga: money(folga),
-    podeGuardarAgora: money(podeGuardarAgora),
-    limitadoPor: limitedBy,
-    totalPossivel: money(totalPossivel),
-    percentPossivel: pct(totalPossivel, entradas).toFixed(1),
-    metaPercent: metaPercent.toFixed(0),
-    metaValor: money(metaValor),
-    faltaParaMeta: money(faltaParaMeta),
-    overspending,
-    destino,
+    numDays,
+    elapsedDays,
+    days,
+    entradas,
+    saidas,
+    cartao,
+    diarioReal,
+    diarioPrevisto,
+    economiaFeita,
+    sobraProjetada,
+    minSaldo,
+    folga,
+    podeGuardarAgora,
+    limitedBy,
+    totalPossivel,
+    metaPercent,
+    metaValor,
+    faltaParaMeta,
   };
 }

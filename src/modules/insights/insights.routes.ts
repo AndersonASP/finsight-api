@@ -7,6 +7,7 @@ import { AppError } from "../../core/http/errors.js";
 import { simulatePurchase } from "./purchase-simulation.service.js";
 import { getSavingsCapacity } from "./savings-capacity.service.js";
 import { getSummary } from "./summary.service.js";
+import { whatIf } from "./what-if.service.js";
 
 export const insightsRouter = Router();
 
@@ -45,5 +46,32 @@ insightsRouter.post(
     const input = simulatePurchaseSchema.parse(req.body);
     const date = parseDateParam(input.date ?? new Date().toISOString().slice(0, 10), "date");
     res.json(await simulatePurchase(requireUserId(req), { ...input, date }));
+  })
+);
+
+const whatIfSchema = z.object({
+  description: z.string().trim().max(80).optional(),
+  amount: z.string(),
+  payment: z
+    .discriminatedUnion("method", [
+      z.object({ method: z.literal("pix") }),
+      z.object({ method: z.literal("card"), cardId: z.string().uuid(), installments: z.number().int().min(1).max(24).default(1) }),
+      z.object({ method: z.literal("decide") }),
+    ])
+    .default({ method: "decide" }),
+  pixDiscountPercent: z.number().min(0).max(50).optional(),
+  interestFreeInstallments: z.number().int().min(1).max(24).optional(),
+  recurring: z.boolean().optional(),
+});
+
+/**
+ * "E se?" — a purchase made today (or a monthly charge) against the real
+ * projection: verdict with the reserve guardian, the best payment method
+ * when asked, and plain-language text. Nothing is saved.
+ */
+insightsRouter.post(
+  "/what-if",
+  asyncHandler(async (req, res) => {
+    res.json(await whatIf(requireUserId(req), whatIfSchema.parse(req.body)));
   })
 );
