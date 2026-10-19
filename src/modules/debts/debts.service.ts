@@ -19,7 +19,14 @@ export interface DebtInput {
   firstInstallmentDate?: Date;
   payoffAmount?: string | null;
   monthlyInterestRate?: string | null;
+  assetId?: string | null;
   notes?: string;
+}
+
+async function checkAsset(userId: string, assetId: string | null | undefined) {
+  if (!assetId) return;
+  const asset = await prisma.asset.findUnique({ where: { id: assetId } });
+  if (!asset || asset.userId !== userId) throw AppError.badRequest("assetId must be one of your bens");
 }
 
 /**
@@ -93,6 +100,7 @@ export async function createDebt(userId: string, input: DebtInput) {
   if (kind === "parcela_fixa" && (input.installmentsTotal == null || input.installmentAmount == null)) {
     throw AppError.badRequest("installmentsTotal and installmentAmount are required for parcela_fixa");
   }
+  await checkAsset(userId, input.assetId);
   const today = startOfUtcDay(new Date());
   const data = toDebtData({ ...input, kind }, today) as Prisma.DebtUncheckedCreateInput;
   return prisma.debt.create({
@@ -113,6 +121,7 @@ export async function updateDebt(userId: string, debtId: string, input: Partial<
   if (input.currentBalance != null && new Prisma.Decimal(input.currentBalance).lessThan(0)) {
     throw AppError.badRequest("currentBalance cannot be negative");
   }
+  await checkAsset(userId, input.assetId);
   // "Parcela X" needs the due day even when only X changed.
   const withDueDay = { ...input, installmentDueDay: input.installmentDueDay ?? debt.installmentDueDay ?? undefined };
   return prisma.debt.update({ where: { id: debtId }, data: toDebtData(withDueDay, startOfUtcDay(new Date())) });
@@ -147,6 +156,14 @@ export async function createPayment(userId: string, debtId: string, input: Creat
 
     const amount = new Prisma.Decimal(input.amount);
     if (amount.lessThanOrEqualTo(0)) throw AppError.badRequest("amount must be greater than zero");
+
+    // A fixed-installment debt already shrinks by the calendar: registering a
+    // payment too would debit the account without changing what's owed.
+    if (debt.kind === "parcela_fixa" && debt.firstInstallmentDate != null) {
+      throw AppError.badRequest(
+        "fixed-installment debts are paid by the calendar — log the installment as a saída instead of a debt payment"
+      );
+    }
 
     const currentBalance = new Prisma.Decimal(debt.currentBalance);
     if (amount.greaterThan(currentBalance)) {

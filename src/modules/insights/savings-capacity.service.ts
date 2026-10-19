@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../core/db/prisma.js";
 import { addMonthsClamped, daysInMonth, startOfUtcDay } from "../../core/http/date.js";
-import { getAccountBalance } from "../accounts/accounts.service.js";
+import { getInvestmentValue } from "../accounts/accounts.service.js";
 import { getBudgetSummary } from "../budget/budget.service.js";
 import { getDailyBalance, getMonthlyTotals } from "../reports/reports.service.js";
 import { getDebtOutstanding, isExpensiveDebt } from "../wealth/debt-outstanding.js";
@@ -93,8 +93,10 @@ export async function getReserveStatus(userId: string, today: Date) {
     getReserveTargetMonths(userId),
     averageMonthlyCost(userId, today),
   ]);
+  // Same value the patrimônio shows: the last informed balance (with its
+  // rendimento) plus movements after it.
   let saldo = ZERO;
-  for (const account of reserveAccounts) saldo = saldo.plus(await getAccountBalance(userId, account.id, today));
+  for (const account of reserveAccounts) saldo = saldo.plus((await getInvestmentValue(userId, account.id, today)).value);
   if (!avgCost || avgCost.isZero()) return { saldo, custoMensal: null, meses: null, metaMeses, completa: false, falta: ZERO };
   const meses = saldo.dividedBy(avgCost);
   const completa = !meses.lessThan(metaMeses);

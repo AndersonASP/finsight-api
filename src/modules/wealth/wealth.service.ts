@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../core/db/prisma.js";
-import { addMonthsClamped, startOfUtcDay } from "../../core/http/date.js";
+import { addDays, addMonthsClamped, daysInMonth, startOfUtcDay } from "../../core/http/date.js";
 import { AppError } from "../../core/http/errors.js";
 import { getAccountBalance, getInvestmentValue } from "../accounts/accounts.service.js";
 import { costOfLiving, getMonthlyTotals } from "../reports/reports.service.js";
@@ -55,12 +55,16 @@ function group(groupKey: string, label: string, items: WealthItem[]): WealthGrou
 // ------------------------------------------------------------------ assets
 
 async function accountGroups(userId: string, today: Date) {
-  const accounts = await prisma.account.findMany({ where: { userId, isArchived: false }, orderBy: { createdAt: "asc" } });
+  const accounts = await prisma.account.findMany({
+    where: { userId, isArchived: false, createdAt: { lt: addDays(today, 1) } },
+    orderBy: { createdAt: "asc" },
+  });
   const disponivel: WealthItem[] = [];
   const reserva: WealthItem[] = [];
   const investimentos: WealthItem[] = [];
 
   for (const account of accounts) {
+    const details = { accountType: account.type };
     if (account.type === "investment") {
       const { value, valuedAt } = await getInvestmentValue(userId, account.id, today);
       investimentos.push({
@@ -74,10 +78,29 @@ async function accountGroups(userId: string, today: Date) {
         note: valuedAt
           ? "Último valor informado + aportes e resgates depois dele"
           : "Valor nunca atualizado — os rendimentos não estão incluídos",
+        details,
       });
       continue;
     }
-    const item: WealthItem = {
+    if (account.type === "savings_reserve") {
+      // The reserve earns (~100% do CDI): an informed balance anchors it like
+      // an investment. Never informed, it's just the ledger — not flagged,
+      // since many reserves are plain accounts.
+      const { value, valuedAt } = await getInvestmentValue(userId, account.id, today);
+      reserva.push({
+        id: account.id,
+        kind: "account",
+        name: account.name,
+        value: value.toFixed(2),
+        source: valuedAt ? "informado" : "calculado",
+        asOf: iso(valuedAt ?? today),
+        stale: valuedAt != null && ageInDays(valuedAt, today) > STALE_DAYS.investment,
+        note: valuedAt ? "Último saldo informado (com rendimento) + movimentações depois dele" : "Pelos lançamentos (sem rendimento)",
+        details,
+      });
+      continue;
+    }
+    disponivel.push({
       id: account.id,
       kind: "account",
       name: account.name,
@@ -86,44 +109,84 @@ async function accountGroups(userId: string, today: Date) {
       asOf: iso(today),
       stale: false,
       note: "Pelos lançamentos",
-    };
-    (account.type === "savings_reserve" ? reserva : disponivel).push(item);
+      details,
+    });
   }
   return { disponivel, reserva, investimentos };
 }
 
-async function informedAssetGroups(userId: string, today: Date) {
-  const assets = await prisma.asset.findMany({ where: { userId }, orderBy: { createdAt: "asc" } });
+type AssetWithValuations = Prisma.AssetGetPayload<{ include: { valuations: true } }>;
+
+/**
+ * What a bem was worth on `date`: its last informed value up to that day.
+ * Null when it wasn't registered yet (neither created nor valued by then).
+ */
+export function getAssetValueAt(asset: AssetWithValuations, date: Date) {
+  const valuations = [...asset.valuations].sort((a, b) => a.valuedAt.getTime() - b.valuedAt.getTime());
+  const firstKnown = Math.min(startOfUtcDay(asset.createdAt).getTime(), valuations[0]?.valuedAt.getTime() ?? Infinity);
+  if (date.getTime() < firstKnown) return null;
+  const last = valuations.filter((v) => v.valuedAt.getTime() <= date.getTime()).at(-1) ?? valuations[0];
+  return last
+    ? { value: new Prisma.Decimal(last.value), valuedAt: last.valuedAt }
+    : { value: new Prisma.Decimal(asset.value), valuedAt: asset.valuedAt };
+}
+
+async function informedAssetGroups(userId: string, today: Date, debtByAsset: Map<string, Prisma.Decimal>) {
+  const all = await prisma.asset.findMany({ where: { userId }, include: { valuations: true }, orderBy: { createdAt: "asc" } });
   const aReceber: WealthItem[] = [];
   const bens: WealthItem[] = [];
-  for (const asset of assets) {
+  const rendaBens: WealthItem[] = [];
+  const assets: { isLiquid: boolean; value: Prisma.Decimal }[] = [];
+  for (const asset of all) {
+    const at = getAssetValueAt(asset, today);
+    if (!at) continue;
+    assets.push({ isLiquid: asset.isLiquid, value: at.value });
     const isReceivable = asset.kind === "a_receber";
     const maxAge = isReceivable ? STALE_DAYS.a_receber : STALE_DAYS.bem;
-    (isReceivable ? aReceber : bens).push({
+    const debt = debtByAsset.get(asset.id) ?? null;
+    const item: WealthItem = {
       id: asset.id,
       kind: "asset",
       name: asset.name,
-      value: new Prisma.Decimal(asset.value).toFixed(2),
+      value: at.value.toFixed(2),
       source: "informado",
-      asOf: iso(asset.valuedAt),
-      stale: ageInDays(asset.valuedAt, today) > maxAge,
-      note: isReceivable ? "Valor a receber informado" : "Valor estimado informado",
-      details: { assetKind: asset.kind, isLiquid: asset.isLiquid, notes: asset.notes },
-    });
+      asOf: iso(at.valuedAt),
+      stale: ageInDays(at.valuedAt, today) > maxAge,
+      note: isReceivable ? "Valor a receber informado" : "Valor de mercado informado",
+      details: {
+        assetKind: asset.kind,
+        block: asset.block,
+        isLiquid: asset.isLiquid,
+        notes: asset.notes,
+        // Financed bem: how much is still owed on it and how much is really yours.
+        debtOutstanding: debt?.toFixed(2) ?? null,
+        equity: debt ? at.value.minus(debt).toFixed(2) : null,
+      },
+    };
+    if (isReceivable) aReceber.push(item);
+    else if (asset.block === "investimentos") rendaBens.push(item);
+    else bens.push(item);
   }
-  return { aReceber, bens, assets };
+  return { aReceber, bens, rendaBens, assets };
 }
 
 // ------------------------------------------------------------- liabilities
 
 async function debtGroups(userId: string, today: Date) {
-  const debts = await prisma.debt.findMany({ where: { userId, status: { not: "paga" } }, orderBy: { createdAt: "asc" } });
+  const all = await prisma.debt.findMany({ where: { userId, status: { not: "paga" } }, orderBy: { createdAt: "asc" } });
+  // As of a past day, only debts already registered (or, for a financing, whose
+  // first installment had already come) count.
+  const debts = all.filter(
+    (d) => Math.min(startOfUtcDay(d.createdAt).getTime(), d.firstInstallmentDate?.getTime() ?? Infinity) <= today.getTime()
+  );
   const parcelaFixa: WealthItem[] = [];
   const saldoVariavel: WealthItem[] = [];
+  const byAsset = new Map<string, Prisma.Decimal>();
   let monthlyInterest = ZERO;
   let expensiveDebt = ZERO;
   for (const debt of debts) {
     const outstanding = getDebtOutstanding(debt, today);
+    if (debt.assetId) byAsset.set(debt.assetId, (byAsset.get(debt.assetId) ?? ZERO).plus(outstanding.value));
     if (outstanding.monthlyInterestCost) monthlyInterest = monthlyInterest.plus(outstanding.monthlyInterestCost);
     if (isExpensiveDebt(debt)) expensiveDebt = expensiveDebt.plus(outstanding.value);
     const item: WealthItem = {
@@ -146,11 +209,12 @@ async function debtGroups(userId: string, today: Date) {
         endDate: iso(outstanding.endDate),
         monthlyInterestRate: debt.monthlyInterestRate ? new Prisma.Decimal(debt.monthlyInterestRate).toFixed(3) : null,
         monthlyInterestCost: outstanding.monthlyInterestCost?.toFixed(2) ?? null,
+        assetId: debt.assetId,
       },
     };
     (outstanding.installmentsTotal != null ? parcelaFixa : saldoVariavel).push(item);
   }
-  return { parcelaFixa, saldoVariavel, debts, monthlyInterest, expensiveDebt };
+  return { parcelaFixa, saldoVariavel, debts, byAsset, monthlyInterest, expensiveDebt };
 }
 
 /**
@@ -252,18 +316,14 @@ const sumGroups = (groups: WealthGroup[]) => groups.reduce((s, g) => s.plus(g.to
  *   that's actually free.
  */
 export async function computeWealth(userId: string, asOf: Date) {
-  const [{ disponivel, reserva, investimentos }, { aReceber, bens, assets }, { parcelaFixa, saldoVariavel, monthlyInterest, expensiveDebt }, cartao] =
-    await Promise.all([
-      accountGroups(userId, asOf),
-      informedAssetGroups(userId, asOf),
-      debtGroups(userId, asOf),
-      cardGroup(userId, asOf),
-    ]);
+  const [{ disponivel, reserva, investimentos }, { parcelaFixa, saldoVariavel, byAsset, monthlyInterest, expensiveDebt }, cartao] =
+    await Promise.all([accountGroups(userId, asOf), debtGroups(userId, asOf), cardGroup(userId, asOf)]);
+  const { aReceber, bens, rendaBens, assets } = await informedAssetGroups(userId, asOf, byAsset);
 
   const assetGroups = [
     group("disponivel", "Disponível", disponivel),
     group("reserva", "Reserva", reserva),
-    group("investimentos", "Investimentos", investimentos),
+    group("investimentos", "Investimentos", [...investimentos, ...rendaBens]),
     group("a_receber", "A receber", aReceber),
     group("bens", "Bens", bens),
   ].filter((g) => g.items.length > 0);
@@ -313,8 +373,50 @@ const trendOf = (change: Prisma.Decimal | null) =>
         ? "crescendo"
         : "caindo";
 
+/** How far back missing monthly snapshots are rebuilt. */
+const MAX_BACKFILL_MONTHS = 24;
+
+const snapshotFigures = (w: Awaited<ReturnType<typeof computeWealth>>) => ({
+  assets: w.totalAssets,
+  liabilities: w.totalLiabilities,
+  netWorth: w.netWorth,
+  financialNetWorth: w.financialNetWorth,
+  cardCommitments: w.cardCommitments,
+  netWorthPercent: snapshotPercent(w.netWorthPercent),
+});
+
+/**
+ * Método R7: one closing figure per month. Every past month since the
+ * user's first account (up to 24) that isn't final yet — missing, or last
+ * written mid-month while it was the current one — is recomputed as of its
+ * last day and frozen.
+ */
+async function finalizePastMonths(userId: string, today: Date) {
+  const first = await prisma.account.findFirst({ where: { userId }, orderBy: { createdAt: "asc" }, select: { createdAt: true } });
+  if (!first) return;
+  const thisMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+  const firstMonth = new Date(Date.UTC(first.createdAt.getUTCFullYear(), first.createdAt.getUTCMonth(), 1));
+  const oldest = addMonthsClamped(thisMonth, -MAX_BACKFILL_MONTHS);
+  const final = await prisma.netWorthSnapshot.findMany({ where: { userId, isFinal: true }, select: { year: true, month: true } });
+  const done = new Set(final.map((s) => s.year * 12 + s.month));
+
+  for (let m = firstMonth > oldest ? firstMonth : oldest; m < thisMonth; m = addMonthsClamped(m, 1)) {
+    const year = m.getUTCFullYear();
+    const month = m.getUTCMonth() + 1;
+    if (done.has(year * 12 + month)) continue;
+    const lastDay = new Date(Date.UTC(year, month - 1, daysInMonth(year, month)));
+    const figures = { ...snapshotFigures(await computeWealth(userId, lastDay)), isFinal: true };
+    await prisma.netWorthSnapshot.upsert({
+      where: { userId_year_month: { userId, year, month } },
+      create: { userId, year, month, ...figures },
+      update: figures,
+    });
+  }
+}
+
 export async function getWealth(userId: string, now = new Date()) {
   const today = startOfUtcDay(now);
+  await finalizePastMonths(userId, today);
   const w = await computeWealth(userId, today);
   const [avgCost, reserveTargetMonths] = await Promise.all([averageMonthlyCost(userId, today), getReserveTargetMonths(userId)]);
   const reserveMonths = avgCost && avgCost.greaterThan(0) ? w.reserveTotal.dividedBy(avgCost) : null;
@@ -324,14 +426,7 @@ export async function getWealth(userId: string, now = new Date()) {
 
   const year = today.getUTCFullYear();
   const month = today.getUTCMonth() + 1;
-  const figures = {
-    assets: w.totalAssets,
-    liabilities: w.totalLiabilities,
-    netWorth: w.netWorth,
-    financialNetWorth: w.financialNetWorth,
-    cardCommitments: w.cardCommitments,
-    netWorthPercent: snapshotPercent(w.netWorthPercent),
-  };
+  const figures = snapshotFigures(w);
   await prisma.netWorthSnapshot.upsert({
     where: { userId_year_month: { userId, year, month } },
     create: { userId, year, month, ...figures },
@@ -417,6 +512,8 @@ export interface AssetInput {
   value: string;
   valuedAt: Date;
   isLiquid?: boolean;
+  /** "investimentos" for a bem that produces income (imóvel alugado). */
+  block?: "outros" | "investimentos";
   notes?: string;
 }
 
@@ -426,7 +523,12 @@ export function listAssets(userId: string) {
 
 export function createAsset(userId: string, input: AssetInput) {
   return prisma.asset.create({
-    data: { userId, ...input, isLiquid: input.isLiquid ?? input.kind === "a_receber" },
+    data: {
+      userId,
+      ...input,
+      isLiquid: input.isLiquid ?? input.kind === "a_receber",
+      valuations: { create: { valuedAt: input.valuedAt, value: input.value } },
+    },
   });
 }
 
@@ -436,9 +538,29 @@ async function getOwnedAsset(userId: string, id: string) {
   return asset;
 }
 
+/**
+ * A new value is also kept in the bem's history (one per day), so past
+ * months keep the value they had — revaluing a car down shows up as the
+ * patrimônio falling in the month it happened. Asset.value always mirrors
+ * the latest valuation.
+ */
 export async function updateAsset(userId: string, id: string, input: Partial<AssetInput>) {
   await getOwnedAsset(userId, id);
-  return prisma.asset.update({ where: { id }, data: input });
+  return prisma.$transaction(async (tx) => {
+    if (input.value != null && input.valuedAt) {
+      await tx.assetValuation.upsert({
+        where: { assetId_valuedAt: { assetId: id, valuedAt: input.valuedAt } },
+        create: { assetId: id, valuedAt: input.valuedAt, value: input.value },
+        update: { value: input.value },
+      });
+    }
+    const { value: _value, valuedAt: _valuedAt, ...rest } = input;
+    const latest = await tx.assetValuation.findFirst({ where: { assetId: id }, orderBy: { valuedAt: "desc" } });
+    return tx.asset.update({
+      where: { id },
+      data: { ...rest, ...(latest ? { value: latest.value, valuedAt: latest.valuedAt } : {}) },
+    });
+  });
 }
 
 export async function deleteAsset(userId: string, id: string) {

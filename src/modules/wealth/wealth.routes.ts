@@ -27,7 +27,9 @@ export const assetsRouter = Router();
 const assetSchema = z.object({
   name: z.string().trim().min(1),
   kind: z.enum(["imovel", "veiculo", "a_receber", "outro"]),
-  value: z.string(),
+  /** Market value, conservative (what it would sell for today). */
+  value: z.string().regex(/^\d+(\.\d{1,2})?$/, "value must be a non-negative amount like 1234.56"),
+  block: z.enum(["outros", "investimentos"]).optional(),
   /** Defaults to today. */
   valuedAt: z.string().optional(),
   isLiquid: z.boolean().optional(),

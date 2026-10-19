@@ -2,7 +2,7 @@ import request from "supertest";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { app } from "../../src/app.js";
 import { prisma } from "../../src/core/db/prisma.js";
-import { cleanupDatabase, createTestUser } from "./helpers.js";
+import { cleanupDatabase, createTestUser, todayIso } from "./helpers.js";
 
 describe("debts", () => {
   afterEach(async () => {
@@ -86,6 +86,21 @@ describe("debts", () => {
     const detailRes = await request(app).get(`/debts/${debtRes.body.id}`).set("Authorization", `Bearer ${token}`).expect(200);
     expect(detailRes.body.debt.status).toBe("paga");
     expect(detailRes.body.debt.currentBalance).toBe("0.00");
+  });
+
+  it("refuses a payment on a fixed-installment debt: the calendar already pays it down", async () => {
+    const { token, accountId } = await setup();
+    const debt = await request(app)
+      .post("/debts")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ creditor: "Banco", type: "financiamento", installmentAmount: "500.00", installmentsTotal: 24, installmentDueDay: 10, currentInstallment: 3 })
+      .expect(201);
+
+    await request(app)
+      .post(`/debts/${debt.body.id}/payments`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ accountId, amount: "500.00", paymentDate: todayIso() })
+      .expect(400);
   });
 
   it("rejects a payment larger than the current balance", async () => {

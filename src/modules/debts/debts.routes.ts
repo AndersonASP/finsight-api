@@ -33,6 +33,8 @@ const debtSchema = z.object({
   firstInstallmentDate: z.string().optional(),
   payoffAmount: z.string().nullable().optional(),
   monthlyInterestRate: z.string().nullable().optional(),
+  /** The bem this debt financed (null unlinks it). */
+  assetId: z.string().uuid().nullable().optional(),
   notes: z.string().optional(),
 });
 

@@ -214,6 +214,105 @@ describe("wealth (patrimônio)", () => {
     expect(history[0].netWorth).toBe("47000.00");
   });
 
+  describe("histórico mensal (método R7)", () => {
+    const monthOf = (iso: string) => {
+      const [year, month] = iso.split("-").map(Number);
+      return { year, month };
+    };
+    /** Pretends the user's accounts were registered `n` months ago. */
+    const registeredMonthsAgo = async (n: number) => {
+      await prisma.account.updateMany({ data: { createdAt: new Date(`${addMonthsIso(todayIso(), -n).slice(0, 8)}01T12:00:00.000Z`) } });
+    };
+
+    it("fills months nobody looked at and closes a mid-month snapshot at the month's last day", async () => {
+      const { auth, checking } = await setup();
+      await registeredMonthsAgo(2);
+      const userId = (await prisma.user.findFirstOrThrow()).id;
+      const last = monthOf(addMonthsIso(todayIso(), -1));
+      // Written mid-month while it was the current one (not final yet).
+      await prisma.netWorthSnapshot.create({ data: { userId, ...last, assets: "1", liabilities: "0", netWorth: "1" } });
+      // A saída on the last month's 10th: the closing figure must include it.
+      await request(app)
+        .post("/transactions")
+        .set(auth)
+        .send({ accountId: checking, type: "saida", amount: "200.00", date: `${addMonthsIso(todayIso(), -1).slice(0, 8)}10` })
+        .expect(201);
+
+      await get(auth);
+      const history = (await request(app).get("/wealth/history").set(auth).expect(200)).body;
+      expect(history.map((h: { month: number }) => h.month)).toEqual([
+        monthOf(addMonthsIso(todayIso(), -2)).month,
+        last.month,
+        monthOf(todayIso()).month,
+      ]);
+      expect(history[0].netWorth).toBe("7000.00"); // 1000 conta + 6000 reserva
+      expect(history[1].netWorth).toBe("6800.00"); // closed after the saída, not the stale "1"
+      const closed = await prisma.netWorthSnapshot.findFirstOrThrow({ where: { userId, ...last } });
+      expect(closed.isFinal).toBe(true);
+    });
+
+    it("a bem revalued down makes the patrimônio fall in the month it happened", async () => {
+      const { auth } = await setup();
+      await registeredMonthsAgo(2);
+      const lastMonthStart = `${addMonthsIso(todayIso(), -1).slice(0, 8)}01`;
+      const car = (
+        await request(app)
+          .post("/assets")
+          .set(auth)
+          .send({ name: "Carro", kind: "veiculo", value: "40000.00", valuedAt: lastMonthStart })
+          .expect(201)
+      ).body.id;
+      await request(app).patch(`/assets/${car}`).set(auth).send({ value: "32000.00" }).expect(200);
+
+      const wealth = await get(auth);
+      expect(wealth.netWorth).toBe("39000.00");
+      expect(wealth.diagnostico).toMatchObject({ tendencia: "caindo", variacao: "-8000.00", variacaoFinanceira: "0.00" });
+      const history = (await request(app).get("/wealth/history").set(auth).expect(200)).body;
+      expect(history.at(-2).netWorth).toBe("47000.00"); // last month kept the car at 40k
+    });
+  });
+
+  it("counts the reserve's rendimento once a balance is informed", async () => {
+    const { auth, reserve } = await setup();
+    await request(app).post(`/accounts/${reserve}/balance-snapshots`).set(auth).send({ snapshotDate: todayIso(), balance: "6150.00" }).expect(201);
+
+    const wealth = await get(auth);
+    expect(groupOf(wealth.assets, "reserva")!.items[0]).toMatchObject({ value: "6150.00", source: "informado" });
+    expect(wealth.diagnostico.reserva).toBe("6150.00");
+  });
+
+  it("a rented property counts as investimento and a linked financing shows how much of it is yours", async () => {
+    const { auth } = await setup();
+    const flat = (
+      await request(app)
+        .post("/assets")
+        .set(auth)
+        .send({ name: "Apto alugado", kind: "imovel", value: "300000.00", block: "investimentos" })
+        .expect(201)
+    ).body.id;
+    await request(app)
+      .post("/debts")
+      .set(auth)
+      .send({ creditor: "Caixa", type: "financiamento", currentBalance: "200000.00", assetId: flat })
+      .expect(201);
+
+    const wealth = await get(auth);
+    expect(groupOf(wealth.assets, "bens")).toBeUndefined();
+    const item = groupOf(wealth.assets, "investimentos")!.items.find((i) => i.id === flat)!;
+    expect(item.details).toMatchObject({ block: "investimentos", debtOutstanding: "200000.00", equity: "100000.00" });
+  });
+
+  it("rejects a bem with a negative or malformed value, and a debt linked to someone else's bem", async () => {
+    const { auth } = await setup();
+    await request(app).post("/assets").set(auth).send({ name: "X", kind: "outro", value: "-10.00" }).expect(400);
+    await request(app).post("/assets").set(auth).send({ name: "X", kind: "outro", value: "abc" }).expect(400);
+    await request(app)
+      .post("/debts")
+      .set(auth)
+      .send({ creditor: "Y", type: "outro", currentBalance: "10.00", assetId: "00000000-0000-0000-0000-000000000000" })
+      .expect(400);
+  });
+
   it("rejects 'parcela X' beyond the total", async () => {
     const { auth } = await setup();
     await request(app)

@@ -72,6 +72,7 @@ export async function cleanupDatabase() {
   await prisma.category.deleteMany();
   await prisma.savingsGoal.deleteMany();
   await prisma.netWorthSnapshot.deleteMany();
+  await prisma.assetValuation.deleteMany();
   await prisma.asset.deleteMany();
   await prisma.walletCardMapping.deleteMany();
   await prisma.refreshToken.deleteMany();

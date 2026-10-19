@@ -264,6 +264,10 @@ model Debt {
   balanceUpdatedAt     DateTime?  @map("balance_updated_at") @db.Date
   monthlyInterestRate  Decimal?   @map("monthly_interest_rate") @db.Decimal(6, 3)
   notes                String?
+  // The bem this debt financed (financiamento de imóvel/carro), if any — so
+  // the patrimônio can show how much of that bem is really the user's.
+  assetId              String?    @map("asset_id")
+  asset                Asset?     @relation(fields: [assetId], references: [id], onDelete: SetNull)
   createdAt            DateTime   @default(now()) @map("created_at")
   updatedAt            DateTime   @updatedAt @map("updated_at")
 
@@ -637,6 +641,13 @@ enum AssetKind {
   outro
 }
 
+/// Which bloco of the patrimônio a bem belongs to: most are "outros"; a bem
+/// that produces income (imóvel alugado) counts as "investimentos".
+enum AssetBlock {
+  outros
+  investimentos
+}
+
 // Something owned outside the accounts (a property, a car, money someone
 // owes you) — always an informed value with the date it was estimated.
 model Asset {
@@ -648,12 +659,31 @@ model Asset {
   value     Decimal   @db.Decimal(14, 2)
   valuedAt  DateTime  @map("valued_at") @db.Date
   // Counts toward "patrimônio financeiro" (money that can actually be used).
-  isLiquid  Boolean   @default(false) @map("is_liquid")
+  isLiquid  Boolean    @default(false) @map("is_liquid")
+  block     AssetBlock @default(outros)
   notes     String?
-  createdAt DateTime  @default(now()) @map("created_at")
-  updatedAt DateTime  @updatedAt @map("updated_at")
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+
+  valuations AssetValuation[]
+  debts      Debt[]
 
   @@map("assets")
+}
+
+// Every value a bem was informed at, so the patrimônio of any past month can
+// be rebuilt (a car going from 40k to 32k shows up in that month's
+// snapshot). Asset.value/valuedAt mirror the latest row.
+model AssetValuation {
+  id        String   @id @default(uuid())
+  assetId   String   @map("asset_id")
+  asset     Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  valuedAt  DateTime @map("valued_at") @db.Date
+  value     Decimal  @db.Decimal(14, 2)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([assetId, valuedAt])
+  @@map("asset_valuations")
 }
 
 // Net worth as of each month — informed values have no history of their
@@ -675,6 +705,9 @@ model NetWorthSnapshot {
   cardCommitments   Decimal? @map("card_commitments") @db.Decimal(14, 2)
   /// netWorth / assets × 100 — the método's "percentual líquido".
   netWorthPercent   Decimal? @map("net_worth_percent") @db.Decimal(7, 2)
+  /// True once a past month was recomputed as of its last day — the
+  /// month's closing figure, never touched again.
+  isFinal           Boolean  @default(false) @map("is_final")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
