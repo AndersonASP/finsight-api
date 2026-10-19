@@ -3,8 +3,9 @@ import { prisma } from "../../core/db/prisma.js";
 import { addMonthsClamped, startOfUtcDay } from "../../core/http/date.js";
 import { AppError } from "../../core/http/errors.js";
 import { getAccountBalance, getInvestmentValue } from "../accounts/accounts.service.js";
-import { getMonthlyTotals } from "../reports/reports.service.js";
+import { costOfLiving, getMonthlyTotals } from "../reports/reports.service.js";
 import { computeLoanState } from "../reserve-loans/interest.js";
+import { getReserveTargetMonths } from "../settings/settings.service.js";
 import { getDebtOutstanding, isExpensiveDebt } from "./debt-outstanding.js";
 
 const ZERO = new Prisma.Decimal(0);
@@ -195,8 +196,8 @@ async function reserveLoansOwed(userId: string, today: Date) {
 // -------------------------------------------------------------- indicators
 
 /**
- * Average monthly cost of living over the last 3 complete months (saídas +
- * diário + cartão — economia is saving, not cost). Months with no spending
+ * Average monthly custo de vida puro (see costOfLiving) over the last 3
+ * complete months. Months with no spending
  * at all (before the user started) are left out of the average.
  */
 export async function averageMonthlyCost(userId: string, today: Date) {
@@ -205,7 +206,7 @@ export async function averageMonthlyCost(userId: string, today: Date) {
   for (let i = 1; i <= 3; i++) {
     const month = addMonthsClamped(thisMonth, -i);
     const totals = await getMonthlyTotals(userId, month.getUTCFullYear(), month.getUTCMonth() + 1);
-    const cost = new Prisma.Decimal(totals.saidas).plus(totals.diario).plus(totals.cartao);
+    const cost = costOfLiving(totals);
     if (cost.greaterThan(0)) costs.push(cost);
   }
   if (costs.length === 0) return null;
@@ -225,21 +226,38 @@ export async function averageMonthlyResult(userId: string, today: Date) {
     const month = addMonthsClamped(thisMonth, -i);
     const totals = await getMonthlyTotals(userId, month.getUTCFullYear(), month.getUTCMonth() + 1);
     const entradas = new Prisma.Decimal(totals.entradas);
-    const cost = new Prisma.Decimal(totals.saidas).plus(totals.diario).plus(totals.cartao);
+    const cost = costOfLiving(totals);
     if (entradas.greaterThan(0) || cost.greaterThan(0)) results.push(entradas.minus(cost));
   }
   if (results.length === 0) return null;
   return results.reduce((a, b) => a.plus(b), ZERO).dividedBy(results.length);
 }
 
-export async function getWealth(userId: string, now = new Date()) {
-  const today = startOfUtcDay(now);
+/** Método: patrimônio líquido under this share of the total is the warning light. */
+export const NET_WORTH_MIN_PERCENT = 40;
+
+const sumGroups = (groups: WealthGroup[]) => groups.reduce((s, g) => s.plus(g.total), ZERO);
+
+/**
+ * The patrimônio as of `asOf`, as the método defines it — no side effects:
+ *
+ * - **total** = every asset group (disponível, reserva, investimentos,
+ *   a receber, bens);
+ * - **saldo devedor** (`totalLiabilities`) = registered debts only;
+ * - **líquido** = total − saldo devedor, and its share of the total
+ *   (`netWorthPercent`, warning under 40%);
+ * - **compromissos do cartão** (installments still to come of purchases
+ *   already made) are kept apart: not saldo devedor, but they do come out of
+ *   the **financeiro** (líquido − bens ilíquidos − compromissos), the money
+ *   that's actually free.
+ */
+export async function computeWealth(userId: string, asOf: Date) {
   const [{ disponivel, reserva, investimentos }, { aReceber, bens, assets }, { parcelaFixa, saldoVariavel, monthlyInterest, expensiveDebt }, cartao] =
     await Promise.all([
-      accountGroups(userId, today),
-      informedAssetGroups(userId, today),
-      debtGroups(userId, today),
-      cardGroup(userId, today),
+      accountGroups(userId, asOf),
+      informedAssetGroups(userId, asOf),
+      debtGroups(userId, asOf),
+      cardGroup(userId, asOf),
     ]);
 
   const assetGroups = [
@@ -251,75 +269,124 @@ export async function getWealth(userId: string, now = new Date()) {
   ].filter((g) => g.items.length > 0);
   const liabilityGroups = [
     group("parcela_fixa", "Parcelados e financiamentos", parcelaFixa),
-    group("cartao", "Cartões (parcelas a vencer)", cartao),
     group("saldo_variavel", "Saldos devedores", saldoVariavel),
   ].filter((g) => g.items.length > 0);
+  const commitmentGroups = [group("cartao", "Compromissos do cartão (parcelas a vencer)", cartao)].filter(
+    (g) => g.items.length > 0
+  );
 
-  const sum = (groups: WealthGroup[]) => groups.reduce((s, g) => s.plus(g.total), ZERO);
-  const totalAssets = sum(assetGroups);
-  const totalLiabilities = sum(liabilityGroups);
+  const totalAssets = sumGroups(assetGroups);
+  const totalLiabilities = sumGroups(liabilityGroups);
+  const cardCommitments = sumGroups(commitmentGroups);
   const netWorth = totalAssets.minus(totalLiabilities);
+  const netWorthPercent = totalAssets.greaterThan(0) ? netWorth.dividedBy(totalAssets).times(100) : null;
   const illiquid = assets.filter((a) => !a.isLiquid).reduce((s, a) => s.plus(a.value), ZERO);
-  const financialNetWorth = netWorth.minus(illiquid);
+  const financialNetWorth = netWorth.minus(illiquid).minus(cardCommitments);
 
-  const reserveTotal = new Prisma.Decimal(group("reserva", "", reserva).total);
-  const avgCost = await averageMonthlyCost(userId, today);
-  const reserveMonths = avgCost && avgCost.greaterThan(0) ? reserveTotal.dividedBy(avgCost) : null;
+  return {
+    assetGroups,
+    liabilityGroups,
+    commitmentGroups,
+    totalAssets,
+    totalLiabilities,
+    cardCommitments,
+    netWorth,
+    netWorthPercent,
+    financialNetWorth,
+    reserveTotal: new Prisma.Decimal(group("reserva", "", reserva).total),
+    disponivelTotal: new Prisma.Decimal(group("disponivel", "", disponivel).total),
+    monthlyInterest,
+    expensiveDebt,
+  };
+}
+
+/** Fits the snapshot column (Decimal 7,2): only absurd ratios (tiny assets, big debt) get capped. */
+export const snapshotPercent = (p: Prisma.Decimal | null) =>
+  p == null ? null : Prisma.Decimal.min(99999, Prisma.Decimal.max(-99999, p)).toDecimalPlaces(2);
+
+const trendOf = (change: Prisma.Decimal | null) =>
+  change == null
+    ? null
+    : change.abs().lessThan(STABLE_CHANGE_THRESHOLD)
+      ? "estavel"
+      : change.greaterThan(0)
+        ? "crescendo"
+        : "caindo";
+
+export async function getWealth(userId: string, now = new Date()) {
+  const today = startOfUtcDay(now);
+  const w = await computeWealth(userId, today);
+  const [avgCost, reserveTargetMonths] = await Promise.all([averageMonthlyCost(userId, today), getReserveTargetMonths(userId)]);
+  const reserveMonths = avgCost && avgCost.greaterThan(0) ? w.reserveTotal.dividedBy(avgCost) : null;
+  // Método R3: falta = custo de vida × meses desejados − reserva atual.
+  const reserveMissing = avgCost ? Prisma.Decimal.max(ZERO, avgCost.times(reserveTargetMonths).minus(w.reserveTotal)) : null;
+  const reserveComplete = reserveMonths != null && !reserveMonths.lessThan(reserveTargetMonths);
 
   const year = today.getUTCFullYear();
   const month = today.getUTCMonth() + 1;
+  const figures = {
+    assets: w.totalAssets,
+    liabilities: w.totalLiabilities,
+    netWorth: w.netWorth,
+    financialNetWorth: w.financialNetWorth,
+    cardCommitments: w.cardCommitments,
+    netWorthPercent: snapshotPercent(w.netWorthPercent),
+  };
   await prisma.netWorthSnapshot.upsert({
     where: { userId_year_month: { userId, year, month } },
-    create: { userId, year, month, assets: totalAssets, liabilities: totalLiabilities, netWorth, financialNetWorth },
-    update: { assets: totalAssets, liabilities: totalLiabilities, netWorth, financialNetWorth },
+    create: { userId, year, month, ...figures },
+    update: figures,
   });
   const previous = await prisma.netWorthSnapshot.findFirst({
     where: { userId, OR: [{ year: { lt: year } }, { year, month: { lt: month } }] },
     orderBy: [{ year: "desc" }, { month: "desc" }],
   });
 
-  // "Ficando mais rico ou mais pobre": the financial net worth (bens don't
-  // pay bills) against last month's snapshot, or — with no history yet —
-  // the average monthly result of the last months.
-  const previousFinancial =
-    previous?.financialNetWorth != null ? new Prisma.Decimal(previous.financialNetWorth) : null;
-  const avgResult = previousFinancial ? null : await averageMonthlyResult(userId, today);
-  const change = previousFinancial ? financialNetWorth.minus(previousFinancial) : avgResult;
-  const tendencia =
-    change == null
-      ? null
-      : change.abs().lessThan(STABLE_CHANGE_THRESHOLD)
-        ? "estavel"
-        : change.greaterThan(0)
-          ? "crescendo"
-          : "caindo";
+  // "Ficando mais rico ou mais pobre" (método R7): the TOTAL patrimônio
+  // líquido against the last snapshot — so a car losing value or a debt
+  // going down shows up, not only cash. With no history yet, the average
+  // monthly result of the last months stands in.
+  const change = previous ? w.netWorth.minus(previous.netWorth) : await averageMonthlyResult(userId, today);
+  const financialChange =
+    previous?.financialNetWorth != null ? w.financialNetWorth.minus(previous.financialNetWorth) : null;
 
-  const allItems = [...assetGroups, ...liabilityGroups].flatMap((g) => g.items);
+  const allItems = [...w.assetGroups, ...w.liabilityGroups, ...w.commitmentGroups].flatMap((g) => g.items);
   return {
     asOf: iso(today),
-    netWorth: netWorth.toFixed(2),
-    financialNetWorth: financialNetWorth.toFixed(2),
-    totalAssets: totalAssets.toFixed(2),
-    totalLiabilities: totalLiabilities.toFixed(2),
+    netWorth: w.netWorth.toFixed(2),
+    netWorthPercent: w.netWorthPercent?.toFixed(1) ?? null,
+    netWorthMinPercent: NET_WORTH_MIN_PERCENT,
+    /** Método: líquido under 40% of the total — warn (never block). */
+    netWorthAlert: w.netWorthPercent != null && w.netWorthPercent.lessThan(NET_WORTH_MIN_PERCENT),
+    financialNetWorth: w.financialNetWorth.toFixed(2),
+    totalAssets: w.totalAssets.toFixed(2),
+    totalLiabilities: w.totalLiabilities.toFixed(2),
+    cardCommitments: w.cardCommitments.toFixed(2),
     previousNetWorth: previous ? new Prisma.Decimal(previous.netWorth).toFixed(2) : null,
     previousNetWorthMonth: previous ? { year: previous.year, month: previous.month } : null,
     reserveMonths: reserveMonths?.toFixed(1) ?? null,
+    reserveTargetMonths,
+    reserveMissing: reserveMissing?.toFixed(2) ?? null,
+    reserveComplete,
     averageMonthlyCost: avgCost?.toFixed(2) ?? null,
     reserveLoansOwed: (await reserveLoansOwed(userId, today)).toFixed(2),
     diagnostico: {
-      tendencia,
+      tendencia: trendOf(change),
       variacao: change?.toFixed(2) ?? null,
       /** "historico": vs. `desde`'s snapshot; "media_mensal": average per month (no history yet). */
-      base: change == null ? null : previousFinancial ? "historico" : "media_mensal",
-      desde: previousFinancial && previous ? { year: previous.year, month: previous.month } : null,
-      jurosMensais: monthlyInterest.toFixed(2),
-      dividaCara: expensiveDebt.toFixed(2),
-      reserva: reserveTotal.toFixed(2),
-      disponivelNegativo: new Prisma.Decimal(group("disponivel", "", disponivel).total).lessThan(0),
+      base: change == null ? null : previous ? "historico" : "media_mensal",
+      desde: previous ? { year: previous.year, month: previous.month } : null,
+      /** The same comparison without bens and card commitments — secondary figure. */
+      variacaoFinanceira: financialChange?.toFixed(2) ?? null,
+      jurosMensais: w.monthlyInterest.toFixed(2),
+      dividaCara: w.expensiveDebt.toFixed(2),
+      reserva: w.reserveTotal.toFixed(2),
+      disponivelNegativo: w.disponivelTotal.lessThan(0),
     },
     staleCount: allItems.filter((i) => i.stale).length,
-    assets: assetGroups,
-    liabilities: liabilityGroups,
+    assets: w.assetGroups,
+    liabilities: w.liabilityGroups,
+    commitments: w.commitmentGroups,
   };
 }
 
@@ -329,12 +396,16 @@ export async function getWealthHistory(userId: string, months: number) {
     orderBy: [{ year: "desc" }, { month: "desc" }],
     take: months,
   });
+  const money = (d: Prisma.Decimal.Value | null) => (d == null ? null : new Prisma.Decimal(d).toFixed(2));
   return snapshots.reverse().map((s) => ({
     year: s.year,
     month: s.month,
-    assets: new Prisma.Decimal(s.assets).toFixed(2),
-    liabilities: new Prisma.Decimal(s.liabilities).toFixed(2),
-    netWorth: new Prisma.Decimal(s.netWorth).toFixed(2),
+    assets: money(s.assets),
+    liabilities: money(s.liabilities),
+    netWorth: money(s.netWorth),
+    financialNetWorth: money(s.financialNetWorth),
+    cardCommitments: money(s.cardCommitments),
+    netWorthPercent: s.netWorthPercent == null ? null : new Prisma.Decimal(s.netWorthPercent).toFixed(1),
   }));
 }
 

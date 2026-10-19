@@ -61,7 +61,7 @@ describe("wealth (patrimônio)", () => {
     expect(groupOf(wealth.assets, "investimentos")!.items[0].stale).toBe(true);
   });
 
-  it("counts card installments still to come for purchases already made, not future subscription charges", async () => {
+  it("keeps card installments still to come apart from the saldo devedor, but out of the financeiro", async () => {
     const { auth, checking } = await setup();
     const card = (
       await request(app)
@@ -82,9 +82,16 @@ describe("wealth (patrimônio)", () => {
       .expect(201);
 
     const wealth = await get(auth);
-    const cartao = groupOf(wealth.liabilities, "cartao")!;
+    const cartao = groupOf(wealth.commitments, "cartao")!;
     expect(cartao.total).toBe("339.90");
     expect(cartao.items[0].source).toBe("calculado");
+    // Not saldo devedor (método: only financed bens/debts) …
+    expect(groupOf(wealth.liabilities, "cartao")).toBeUndefined();
+    expect(wealth.totalLiabilities).toBe("0.00");
+    expect(wealth.cardCommitments).toBe("339.90");
+    expect(wealth.netWorth).toBe("7000.00");
+    // … but already-spent money: it comes out of what's actually free.
+    expect(wealth.financialNetWorth).toBe("6660.10");
   });
 
   it("derives fixed-installment debts from the calendar ('parcela X de Y')", async () => {
@@ -146,6 +153,40 @@ describe("wealth (patrimônio)", () => {
     expect(wealth.totalLiabilities).toBe("1800.00");
     expect(wealth.netWorth).toBe("306000.00");
     expect(wealth.financialNetWorth).toBe("6000.00");
+    expect(wealth.netWorthPercent).toBe("99.4"); // 306000 / 307800
+    expect(wealth.netWorthAlert).toBe(false);
+  });
+
+  it("warns (método R2) when the patrimônio líquido is under 40% of the total", async () => {
+    const { auth } = await setup();
+    // Imóvel lançado pelo custo total (320k + 20k de ITBI/escritura) e o financiamento como dívida.
+    await request(app).post("/assets").set(auth).send({ name: "Apartamento", kind: "imovel", value: "340000.00" }).expect(201);
+    await request(app)
+      .post("/debts")
+      .set(auth)
+      .send({ creditor: "Financiamento", type: "financiamento", currentBalance: "256000.00" })
+      .expect(201);
+
+    const wealth = await get(auth);
+    expect(wealth.totalAssets).toBe("347000.00");
+    expect(wealth.totalLiabilities).toBe("256000.00");
+    expect(wealth.netWorth).toBe("91000.00");
+    expect(wealth.netWorthPercent).toBe("26.2");
+    expect(wealth.netWorthMinPercent).toBe(40);
+    expect(wealth.netWorthAlert).toBe(true);
+  });
+
+  it("measures the reserve against the user's target (8 months by default) and says how much is missing", async () => {
+    const { auth, checking } = await setup();
+    const date = addMonthsIso(todayIso(), -1);
+    await request(app).post("/transactions").set(auth).send({ accountId: checking, type: "saida", amount: "1000.00", date }).expect(201);
+
+    let wealth = await get(auth);
+    expect(wealth).toMatchObject({ reserveMonths: "6.0", reserveTargetMonths: 8, reserveMissing: "2000.00", reserveComplete: false });
+
+    await request(app).patch("/settings").set(auth).send({ reserveTargetMonths: 6 }).expect(200);
+    wealth = await get(auth);
+    expect(wealth).toMatchObject({ reserveTargetMonths: 6, reserveMissing: "0.00", reserveComplete: true });
   });
 
   it("keeps reserve loans out of the liabilities and reports them apart", async () => {
@@ -200,16 +241,22 @@ describe("wealth (patrimônio)", () => {
       expect(diagnostico).toMatchObject({ tendencia: "crescendo", variacao: "1000.00", base: "media_mensal", desde: null });
     });
 
-    it("compares the financial net worth (bens left out) with last month's snapshot", async () => {
+    it("compares the TOTAL net worth with last month's snapshot, so a car losing value shows up (método R7)", async () => {
       const { auth } = await setup();
-      await request(app).post("/assets").set(auth).send({ name: "Carro", kind: "veiculo", value: "50000.00" }).expect(201);
-      // Financeiro hoje: 1000 conta + 6000 reserva = 7000; mês passado era 7500.
+      await request(app).post("/assets").set(auth).send({ name: "Carro", kind: "veiculo", value: "32000.00" }).expect(201);
+      // Mês passado: 7000 em dinheiro + carro valendo 40000. Hoje o carro vale 32000.
       await prisma.netWorthSnapshot.create({
-        data: { userId: await userIdOf(), ...lastMonth(), assets: "7500", liabilities: "0", netWorth: "7500", financialNetWorth: "7500" },
+        data: { userId: await userIdOf(), ...lastMonth(), assets: "47000", liabilities: "0", netWorth: "47000", financialNetWorth: "7000" },
       });
 
       const { diagnostico } = await get(auth);
-      expect(diagnostico).toMatchObject({ tendencia: "caindo", variacao: "-500.00", base: "historico", desde: lastMonth() });
+      expect(diagnostico).toMatchObject({
+        tendencia: "caindo",
+        variacao: "-8000.00",
+        base: "historico",
+        desde: lastMonth(),
+        variacaoFinanceira: "0.00", // em dinheiro nada mudou — o patrimônio caiu mesmo assim
+      });
     });
 
     it("reports interest paid and expensive debt, and no trend without data", async () => {
@@ -219,11 +266,6 @@ describe("wealth (patrimônio)", () => {
         .set(auth)
         .send({ creditor: "Rotativo", type: "cartao_vencido", currentBalance: "2500.00", monthlyInterestRate: "12" })
         .expect(201);
-      // An old snapshot without the financial figure doesn't count as history.
-      await prisma.netWorthSnapshot.create({
-        data: { userId: await userIdOf(), ...lastMonth(), assets: "1", liabilities: "0", netWorth: "1" },
-      });
-
       const { diagnostico } = await get(auth);
       expect(diagnostico).toMatchObject({
         tendencia: null,

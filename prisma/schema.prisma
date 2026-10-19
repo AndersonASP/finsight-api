@@ -17,6 +17,9 @@ model User {
   // Bumped after every successful authenticated write (see
   // core/http/data-version.ts) — clients poll it to know when to refetch.
   dataVersion  Int      @default(0) @map("data_version")
+  // Emergency reserve target in months of cost of living (método: 8 mínimo,
+  // 12+ ideal, more with dependents). The single source for every screen.
+  reserveTargetMonths Int @default(8) @map("reserve_target_months")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -665,9 +668,13 @@ model NetWorthSnapshot {
   assets            Decimal  @db.Decimal(14, 2)
   liabilities       Decimal  @db.Decimal(14, 2)
   netWorth          Decimal  @map("net_worth") @db.Decimal(14, 2)
-  /// netWorth minus illiquid bens — what "ficando mais rico/pobre" compares.
-  /// Null on snapshots taken before it was recorded.
+  /// netWorth minus illiquid bens and card commitments — the money that's
+  /// actually free. Null on snapshots taken before it was recorded.
   financialNetWorth Decimal? @map("financial_net_worth") @db.Decimal(14, 2)
+  /// Card installments still to come (kept apart from the saldo devedor).
+  cardCommitments   Decimal? @map("card_commitments") @db.Decimal(14, 2)
+  /// netWorth / assets × 100 — the método's "percentual líquido".
+  netWorthPercent   Decimal? @map("net_worth_percent") @db.Decimal(7, 2)
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 

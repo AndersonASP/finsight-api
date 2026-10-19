@@ -292,7 +292,7 @@ describe("ledger (accounts, transactions, reports)", () => {
 
     expect(res.body.entradas).toBe("1000.00");
     expect(res.body.performance).toBe("700.00"); // 1000 - 100 - 200
-    expect(res.body.custoDeVida).toBe("300.00"); // 100 + 200
+    expect(res.body.custoDeVida).toBe("100.00"); // custo de vida puro: economia is kept, not spent
     expect(res.body.economizadoPercent).toBe("20.00"); // 200 / 1000
   });
 

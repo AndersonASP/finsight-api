@@ -5,6 +5,7 @@ import { getAccountBalance } from "../accounts/accounts.service.js";
 import { getBudgetSummary } from "../budget/budget.service.js";
 import { getDailyBalance, getMonthlyTotals } from "../reports/reports.service.js";
 import { getDebtOutstanding, isExpensiveDebt } from "../wealth/debt-outstanding.js";
+import { getReserveTargetMonths } from "../settings/settings.service.js";
 import { averageMonthlyCost } from "../wealth/wealth.service.js";
 
 const ZERO = new Prisma.Decimal(0);
@@ -13,8 +14,6 @@ const ZERO = new Prisma.Decimal(0);
 export const DEFAULT_TARGET_PERCENT = 20;
 /** A debt at or above this monthly rate is paid off before saving. */
 export { EXPENSIVE_DEBT_MONTHLY_RATE } from "../wealth/debt-outstanding.js";
-/** Emergency reserve considered complete, in months of cost of living. */
-export const RESERVE_TARGET_MONTHS = 6;
 /** Saldo kept untouched when suggesting how much to move: days of diário. */
 export const SAFETY_DAYS_OF_DIARIO = 7;
 
@@ -84,42 +83,30 @@ async function topOverspending(userId: string, year: number, month: number, elap
 }
 
 /**
- * How many months of cost of living the `savings_reserve` accounts cover.
- * `meses` is null while there's no complete month of spending to measure.
+ * How many months of cost of living the `savings_reserve` accounts cover,
+ * against the user's own target (`metaMeses`). `meses` is null while there's
+ * no complete month of spending to measure. `falta` = custo × meta − reserva.
  */
 export async function getReserveStatus(userId: string, today: Date) {
-  const reserveAccounts = await prisma.account.findMany({ where: { userId, isArchived: false, type: "savings_reserve" } });
+  const [reserveAccounts, metaMeses, avgCost] = await Promise.all([
+    prisma.account.findMany({ where: { userId, isArchived: false, type: "savings_reserve" } }),
+    getReserveTargetMonths(userId),
+    averageMonthlyCost(userId, today),
+  ]);
   let saldo = ZERO;
   for (const account of reserveAccounts) saldo = saldo.plus(await getAccountBalance(userId, account.id, today));
-  const avgCost = await averageMonthlyCost(userId, today);
-  if (!avgCost || avgCost.isZero()) return { saldo, custoMensal: null, meses: null, completa: false, falta: ZERO };
+  if (!avgCost || avgCost.isZero()) return { saldo, custoMensal: null, meses: null, metaMeses, completa: false, falta: ZERO };
   const meses = saldo.dividedBy(avgCost);
-  const completa = !meses.lessThan(RESERVE_TARGET_MONTHS);
-  return { saldo, custoMensal: avgCost, meses, completa, falta: completa ? ZERO : avgCost.times(RESERVE_TARGET_MONTHS).minus(saldo) };
+  const completa = !meses.lessThan(metaMeses);
+  return { saldo, custoMensal: avgCost, meses, metaMeses, completa, falta: completa ? ZERO : avgCost.times(metaMeses).minus(saldo) };
 }
 
 /**
- * Where the money saved this month should go first — the classic order:
- * expensive debt, then a 6-month emergency reserve, then investing.
+ * Where the money saved this month should go first — the método's order:
+ * the emergency reserve up to the user's target, then expensive debt, then
+ * investing (or a caixinha for a bem, or buying it outright).
  */
 export async function suggestDestination(userId: string, today: Date) {
-  const debts = await prisma.debt.findMany({ where: { userId, status: { not: "paga" } } });
-  const expensive = debts
-    .map((debt) => ({ debt, outstanding: getDebtOutstanding(debt, today) }))
-    .filter(({ debt, outstanding }) => !outstanding.value.isZero() && isExpensiveDebt(debt))
-    .sort((a, b) => Number(b.debt.monthlyInterestRate ?? 99) - Number(a.debt.monthlyInterestRate ?? 99));
-
-  if (expensive.length > 0) {
-    const { debt, outstanding } = expensive[0];
-    const rate = debt.monthlyInterestRate ? `${Number(debt.monthlyInterestRate).toString().replace(".", ",")}% ao mês` : "juros altos";
-    return {
-      kind: "divida" as const,
-      title: `Quitar ${debt.creditor}`,
-      creditor: debt.creditor,
-      detail: `Dívida cara (${rate}): cada real que você paga nela rende mais que qualquer investimento. Falta ${outstanding.value.toFixed(2)}.`,
-    };
-  }
-
   const reserve = await getReserveStatus(userId, today);
   // Without past spending there's no cost of living to size the reserve
   // against — never claim it's complete; building it is still the next step.
@@ -127,20 +114,39 @@ export async function suggestDestination(userId: string, today: Date) {
     return {
       kind: "reserva" as const,
       title: "Reserva de emergência",
-      detail: `Ainda não há meses completos de gastos para medir a reserva. O ideal é guardar ${RESERVE_TARGET_MONTHS} meses do seu custo de vida antes de investir.`,
+      detail: `Ainda não há meses completos de gastos para medir a reserva. A meta é guardar ${reserve.metaMeses} meses do seu custo de vida antes de qualquer outra coisa.`,
     };
   }
   if (!reserve.completa) {
     return {
       kind: "reserva" as const,
       title: "Reserva de emergência",
-      detail: `Ela cobre ${reserve.meses.toFixed(1).replace(".", ",")} meses; o ideal são ${RESERVE_TARGET_MONTHS}. Faltam ${reserve.falta.toFixed(2)}.`,
+      detail: `Ela cobre ${reserve.meses.toFixed(1).replace(".", ",")} meses; sua meta são ${reserve.metaMeses}. Faltam ${reserve.falta.toFixed(2)}.`,
     };
   }
+
+  const debts = await prisma.debt.findMany({ where: { userId, status: { not: "paga" } } });
+  const expensive = debts
+    .map((debt) => ({ debt, outstanding: getDebtOutstanding(debt, today) }))
+    .filter(({ debt, outstanding }) => !outstanding.value.isZero() && isExpensiveDebt(debt))
+    .sort((a, b) => Number(b.debt.monthlyInterestRate ?? 99) - Number(a.debt.monthlyInterestRate ?? 99));
+  if (expensive.length > 0) {
+    const { debt, outstanding } = expensive[0];
+    const rate = debt.monthlyInterestRate ? `${Number(debt.monthlyInterestRate).toString().replace(".", ",")}% ao mês` : "juros altos";
+    return {
+      kind: "divida" as const,
+      title: `Quitar ${debt.creditor}`,
+      creditor: debt.creditor,
+      detail: `Reserva completa. Agora a dívida cara (${rate}): cada real pago nela rende mais que qualquer investimento. Falta ${outstanding.value.toFixed(2)}.`,
+    };
+  }
+
   return {
     kind: "investir" as const,
     title: "Investimentos e metas",
-    detail: "Sem dívidas caras e com a reserva completa: o que sobrar pode render para seus objetivos.",
+    detail:
+      "Reserva completa e sem dívidas caras: o que sobrar pode ir para investimentos, para uma caixinha de entrada de um bem " +
+      "ou para comprar à vista. Prefira o que valoriza — bens que desvalorizam, como carro, puxam o patrimônio para baixo.",
   };
 }
 

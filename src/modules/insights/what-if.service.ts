@@ -2,7 +2,6 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../../core/db/prisma.js";
 import { startOfUtcDay } from "../../core/http/date.js";
 import { AppError } from "../../core/http/errors.js";
-import { RESERVE_TARGET_MONTHS } from "./savings-capacity.service.js";
 import { loadBaseline, type LoadedBaseline } from "./purchase-baseline.js";
 import type { Baseline, CashOut, Impact } from "./purchase-impact.js";
 import type { PurchasePlan } from "./purchase-impact.js";
@@ -294,7 +293,7 @@ export async function whatIf(userId: string, input: WhatIfInput, evaluator?: Wha
     ? null
     : destino.kind === "divida"
       ? { kind: "divida" as const, creditor: destino.creditor }
-      : { kind: "reserva" as const, meses: reserve.meses, metaMeses: RESERVE_TARGET_MONTHS };
+      : { kind: "reserva" as const, meses: reserve.meses, metaMeses: reserve.metaMeses };
   const entradas = referenceEntradas(baseline);
 
   const text = buildWhatIfText({
@@ -339,7 +338,7 @@ export async function whatIf(userId: string, input: WhatIfInput, evaluator?: Wha
     reserva: {
       saldo: money(reserve.saldo),
       meses: reserve.meses ? reserve.meses.toFixed(1) : null,
-      metaMeses: RESERVE_TARGET_MONTHS,
+      metaMeses: reserve.metaMeses,
       completa: reserve.completa,
       vemPrimeiro: baseline.strict,
     },

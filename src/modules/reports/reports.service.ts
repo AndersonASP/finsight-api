@@ -535,6 +535,16 @@ export async function getDayDetail(userId: string, date: Date, toInclusive: Date
   return items;
 }
 
+/**
+ * Custo de vida puro: only what was spent — saídas + diário + cartão.
+ * Economia is money kept (it moved to a reserva/investimento), never cost;
+ * a transferencia isn't either. Used for the month's totals and to size the
+ * emergency reserve, so both always agree.
+ */
+export function costOfLiving(totals: { saidas: Prisma.Decimal.Value; diario: Prisma.Decimal.Value; cartao: Prisma.Decimal.Value }) {
+  return new Prisma.Decimal(totals.saidas).plus(totals.diario).plus(totals.cartao);
+}
+
 export interface MonthlyTotals {
   entradas: string;
   saidas: string;
@@ -580,7 +590,7 @@ export async function getMonthlyTotals(userId: string, year: number, month: numb
   }
 
   const performance = entradas.minus(saidas).minus(diario).minus(economia).minus(cartao);
-  const custoDeVida = saidas.plus(diario).plus(economia).plus(cartao);
+  const custoDeVida = costOfLiving({ saidas, diario, cartao });
   const economizadoPercent = entradas.isZero() ? ZERO : economia.dividedBy(entradas).times(100);
 
   const today = new Date();

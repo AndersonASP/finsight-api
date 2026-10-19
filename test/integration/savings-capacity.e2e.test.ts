@@ -96,8 +96,21 @@ describe("insights: quanto dá para guardar", () => {
     expect(c.metaValor).toBe("1500.00");
   });
 
-  it("points to an expensive debt first", async () => {
-    const { auth } = await setup("1000.00");
+  it("fills the reserve before paying off even an expensive debt (método R4)", async () => {
+    const { auth, tx } = await setup("1000.00");
+    await request(app).post("/debts").set(auth).send({ creditor: "Cartão X", type: "outro", currentBalance: "3000.00", monthlyInterestRate: "8" }).expect(201);
+    const last = futureYearMonth(-1);
+    await tx("saida", "2000.00", `${last.year}-${pad(last.month)}-15`);
+
+    const c = await capacity(auth);
+    expect(c.destino.kind).toBe("reserva");
+  });
+
+  it("with the reserve at its target, points to the most expensive debt", async () => {
+    const { auth, tx } = await setup("1000.00");
+    await request(app).post("/accounts").set(auth).send({ name: "Reserva", type: "savings_reserve", initialBalance: "17000.00" }).expect(201);
+    const last = futureYearMonth(-1);
+    await tx("saida", "2000.00", `${last.year}-${pad(last.month)}-15`);
     await request(app).post("/debts").set(auth).send({ creditor: "Cartão X", type: "outro", currentBalance: "3000.00", monthlyInterestRate: "8" }).expect(201);
     await request(app).post("/debts").set(auth).send({ creditor: "Barato", type: "outro", currentBalance: "500.00", monthlyInterestRate: "1" }).expect(201);
 
@@ -106,7 +119,7 @@ describe("insights: quanto dá para guardar", () => {
     expect(c.destino.title).toBe("Quitar Cartão X");
   });
 
-  it("then to the emergency reserve until it covers 6 months", async () => {
+  it("then to the emergency reserve until it reaches the user's target (8 months by default)", async () => {
     const { auth, tx } = await setup("1000.00");
     await request(app).post("/accounts").set(auth).send({ name: "Reserva", type: "savings_reserve", initialBalance: "3000.00" }).expect(201);
     // Last month's cost of living: R$ 2000.
@@ -116,6 +129,7 @@ describe("insights: quanto dá para guardar", () => {
     const c = await capacity(auth);
     expect(c.destino.kind).toBe("reserva");
     expect(c.destino.detail).toContain("1,5 meses");
+    expect(c.destino.detail).toContain("sua meta são 8");
   });
 
   it("doesn't call the reserve complete when there's no spending history to measure it", async () => {
@@ -125,14 +139,20 @@ describe("insights: quanto dá para guardar", () => {
     expect(c.destino.detail).toContain("Ainda não há meses completos");
   });
 
-  it("only suggests investing once the reserve covers 6 months", async () => {
+  it("only suggests investing once the reserve reaches the target, which the user can change", async () => {
     const { auth, tx } = await setup("1000.00");
     await request(app).post("/accounts").set(auth).send({ name: "Reserva", type: "savings_reserve", initialBalance: "13000.00" }).expect(201);
     const last = futureYearMonth(-1);
     await tx("saida", "2000.00", `${last.year}-${pad(last.month)}-15`);
 
-    const c = await capacity(auth);
-    expect(c.destino.kind).toBe("investir");
+    // 6,5 meses: under the default 8-month target.
+    expect((await capacity(auth)).destino.kind).toBe("reserva");
+
+    await request(app).patch("/settings").set(auth).send({ reserveTargetMonths: 6 }).expect(200);
+    expect((await capacity(auth)).destino.kind).toBe("investir");
+
+    await request(app).patch("/settings").set(auth).send({ reserveTargetMonths: 0 }).expect(400);
+    expect((await request(app).get("/settings").set(auth).expect(200)).body).toEqual({ reserveTargetMonths: 6 });
   });
 
   it("a month already over has nothing left to move", async () => {
