@@ -131,7 +131,11 @@ enum TransactionType {
   entrada
   saida
   diario
+  // "Guardar": checking/cash → a savings_reserve or investment account.
   economia
+  // A neutral move between the user's own accounts (resgate da reserva,
+  // reserva → investimento, …): not spending, not saving.
+  transferencia
 }
 
 model Transaction {

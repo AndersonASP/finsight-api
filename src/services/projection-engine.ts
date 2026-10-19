@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { Prisma, type AccountType, type TransactionType } from "@prisma/client";
 import { prisma } from "../core/db/prisma.js";
 import { getTotalBalance } from "../modules/reports/reports.service.js";
 
@@ -38,17 +38,36 @@ function eachDay(from: Date, to: Date): Date[] {
   return days;
 }
 
-async function realDailyDeltas(userId: string, from: Date, to: Date): Promise<Map<string, Prisma.Decimal>> {
+type AccountTypes = Map<string, AccountType>;
+
+async function accountTypesOf(userId: string): Promise<AccountTypes> {
+  const accounts = await prisma.account.findMany({ where: { userId }, select: { id: true, type: true } });
+  return new Map(accounts.map((a) => [a.id, a.type]));
+}
+
+/**
+ * How a lançamento moves the checking pool — the same pool the starting
+ * balance (getTotalBalance) measures: money leaving or entering a checking
+ * account, and a transfer (economia/transferencia) arriving in one.
+ */
+function checkingDelta(
+  t: { type: TransactionType; amount: Prisma.Decimal.Value; accountId: string; counterpartAccountId: string | null },
+  types: AccountTypes
+) {
+  const amount = new Prisma.Decimal(t.amount);
+  let delta = ZERO;
+  if (types.get(t.accountId) === "checking") delta = t.type === "entrada" ? amount : amount.negated();
+  if (t.counterpartAccountId && types.get(t.counterpartAccountId) === "checking") delta = delta.plus(amount);
+  return delta;
+}
+
+async function realDailyDeltas(userId: string, from: Date, to: Date, types: AccountTypes): Promise<Map<string, Prisma.Decimal>> {
   const deltas = new Map<string, Prisma.Decimal>();
 
   const transactions = await prisma.transaction.findMany({ where: { userId, date: { gte: from, lte: to } } });
   for (const t of transactions) {
     const key = dateKey(t.date);
-    const current = deltas.get(key) ?? ZERO;
-    const amount = new Prisma.Decimal(t.amount);
-    if (t.type === "entrada") deltas.set(key, current.plus(amount));
-    else if (t.type === "saida" || t.type === "diario") deltas.set(key, current.minus(amount));
-    else if (t.type === "economia" && !t.counterpartAccountId) deltas.set(key, current.minus(amount));
+    deltas.set(key, (deltas.get(key) ?? ZERO).plus(checkingDelta(t, types)));
   }
 
   // The bill debits automatically in full on each installment's due date
@@ -64,7 +83,7 @@ async function realDailyDeltas(userId: string, from: Date, to: Date): Promise<Ma
   return deltas;
 }
 
-async function scenarioDailyDeltas(scenarioId: string, from: Date, to: Date): Promise<Map<string, Prisma.Decimal>> {
+async function scenarioDailyDeltas(scenarioId: string, from: Date, to: Date, types: AccountTypes): Promise<Map<string, Prisma.Decimal>> {
   const deltas = new Map<string, Prisma.Decimal>();
 
   const transactions = await prisma.scenarioTransaction.findMany({
@@ -72,11 +91,7 @@ async function scenarioDailyDeltas(scenarioId: string, from: Date, to: Date): Pr
   });
   for (const t of transactions) {
     const key = dateKey(t.date);
-    const current = deltas.get(key) ?? ZERO;
-    const amount = new Prisma.Decimal(t.amount);
-    if (t.type === "entrada") deltas.set(key, current.plus(amount));
-    else if (t.type === "saida" || t.type === "diario") deltas.set(key, current.minus(amount));
-    else if (t.type === "economia" && !t.counterpartAccountId) deltas.set(key, current.minus(amount));
+    deltas.set(key, (deltas.get(key) ?? ZERO).plus(checkingDelta(t, types)));
   }
 
   // An installment from a scenario purchase debits in full on its due date —
@@ -106,8 +121,9 @@ export async function projectScenario(userId: string, scenarioId: string, from: 
   const dayBeforeFrom = new Date(from.getTime() - 86_400_000);
   const startingBalance = await getTotalBalance(userId, dayBeforeFrom);
 
-  const realDeltas = await realDailyDeltas(userId, from, to);
-  const scenarioDeltas = await scenarioDailyDeltas(scenarioId, from, to);
+  const types = await accountTypesOf(userId);
+  const realDeltas = await realDailyDeltas(userId, from, to, types);
+  const scenarioDeltas = await scenarioDailyDeltas(scenarioId, from, to, types);
 
   const combinedDeltas = new Map(realDeltas);
   for (const [key, value] of scenarioDeltas) {

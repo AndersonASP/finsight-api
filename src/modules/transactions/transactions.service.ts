@@ -1,4 +1,4 @@
-import type { Prisma, TransactionType } from "@prisma/client";
+import type { AccountType, Prisma, TransactionType } from "@prisma/client";
 import { prisma } from "../../core/db/prisma.js";
 import { AppError } from "../../core/http/errors.js";
 import { getOwnedAccount } from "../accounts/accounts.service.js";
@@ -20,16 +20,29 @@ export async function validateAccounts(
 ) {
   await getOwnedAccount(userId, input.accountId);
 
-  if (input.counterpartAccountId) {
-    if (input.type !== "economia") {
-      throw AppError.badRequest("counterpartAccountId is only valid for type 'economia' (a transfer)");
-    }
-    if (input.counterpartAccountId === input.accountId) {
-      throw AppError.badRequest("counterpartAccountId cannot equal accountId");
-    }
-    await getOwnedAccount(userId, input.counterpartAccountId);
+  const isTransfer = TRANSFER_TYPES.includes(input.type);
+  if (!input.counterpartAccountId) {
+    // A transfer without a destination would take the money out of the
+    // patrimônio entirely instead of moving it.
+    if (isTransfer) throw AppError.badRequest(`counterpartAccountId is required for type '${input.type}'`);
+    return;
+  }
+  if (!isTransfer) {
+    throw AppError.badRequest("counterpartAccountId is only valid for type 'economia' or 'transferencia'");
+  }
+  if (input.counterpartAccountId === input.accountId) {
+    throw AppError.badRequest("counterpartAccountId cannot equal accountId");
+  }
+  const destination = await getOwnedAccount(userId, input.counterpartAccountId);
+  if (input.type === "economia" && !SAVINGS_DESTINATIONS.includes(destination.type)) {
+    throw AppError.badRequest("economia must go to a reserva or investimento account — use 'transferencia' for other moves");
   }
 }
+
+/** Types that move money between two of the user's own accounts. */
+export const TRANSFER_TYPES: TransactionType[] = ["economia", "transferencia"];
+/** Where "guardar" (economia) can put money. */
+const SAVINGS_DESTINATIONS: AccountType[] = ["savings_reserve", "investment"];
 
 async function getOwnedTransaction(userId: string, transactionId: string) {
   const transaction = await prisma.transaction.findUnique({ where: { id: transactionId } });
@@ -115,6 +128,10 @@ export async function updateTransaction(
         ? input.counterpartAccountId
         : (existing.counterpartAccountId ?? undefined),
   };
+  // Turning a transfer into a plain lançamento drops its destination.
+  if (input.counterpartAccountId === undefined && !TRANSFER_TYPES.includes(merged.type)) {
+    merged.counterpartAccountId = undefined;
+  }
   await validateAccounts(userId, merged);
 
   const data = {

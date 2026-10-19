@@ -45,6 +45,19 @@ describe("reserve loans", () => {
     expect(res.status).toBe(400);
   });
 
+  it("always charges interest: 10% a.m. by default, a custom rate when given, never zero", async () => {
+    const { token, checkingId, reserveId } = await setup();
+    const borrow = (extra: Record<string, unknown>) =>
+      request(app)
+        .post("/reserve-loans")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ reserveAccountId: reserveId, destinationAccountId: checkingId, principal: "100.00", borrowDate: todayIso(), ...extra });
+
+    expect((await borrow({}).expect(201)).body.monthlyInterestRate).toBe("10.00");
+    expect((await borrow({ monthlyInterestRate: 2.5 }).expect(201)).body.monthlyInterestRate).toBe("2.50");
+    expect((await borrow({ monthlyInterestRate: 0 })).status).toBe(400);
+  });
+
   it("rejects a reserve account that isn't type savings_reserve", async () => {
     const { token, checkingId } = await setup();
     const otherCheckingRes = await request(app)

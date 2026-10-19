@@ -108,7 +108,7 @@ describe("savings goals (RF-14)", () => {
     await request(app)
       .post("/transactions")
       .set("Authorization", `Bearer ${token}`)
-      .send({ accountId: checking.body.id, type: "economia", amount: "100.00", date: "2026-09-03" })
+      .send({ accountId: checking.body.id, counterpartAccountId: investment.body.id, type: "economia", amount: "100.00", date: "2026-09-03" })
       .expect(201);
 
     // Investment account gained R$500 in market value this month (no transaction involved).

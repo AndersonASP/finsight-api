@@ -104,6 +104,11 @@ describe("scenarios / simulation (RF-13)", () => {
 
   it("a projection identifies a future deficit and its impact on the savings percentage", async () => {
     const { token, accountId, scenarioId } = await setup();
+    const reserve = await request(app)
+      .post("/accounts")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ name: "Reserva", type: "savings_reserve" })
+      .expect(201);
 
     // Real income this period, so there's a baseline savings percentage.
     await request(app)
@@ -114,7 +119,7 @@ describe("scenarios / simulation (RF-13)", () => {
     await request(app)
       .post("/transactions")
       .set("Authorization", `Bearer ${token}`)
-      .send({ accountId, type: "economia", amount: "200.00", date: "2026-06-02" })
+      .send({ accountId, counterpartAccountId: reserve.body.id, type: "economia", amount: "200.00", date: "2026-06-02" })
       .expect(201);
 
     // Simulated big expense that would push the account negative.

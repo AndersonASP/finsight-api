@@ -12,6 +12,8 @@ const createLoanSchema = z.object({
   destinationAccountId: z.string().uuid(),
   principal: z.string(),
   borrowDate: z.string(),
+  /** % ao mês. Interest is mandatory — borrowing from the reserve always costs something. Defaults to 10. */
+  monthlyInterestRate: z.number().gt(0).max(100).optional(),
   description: z.string().optional(),
 });
 

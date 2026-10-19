@@ -224,8 +224,10 @@ export async function getDailyBalance(
     } else {
       // Mirrors getAccountBalance summed over checking accounts only: a
       // transaction on a checking account always moves the aggregate; an
-      // `economia` transfer whose *counterpart* is checking adds it back
-      // (money arriving there), regardless of the source account's type.
+      // `economia`/`transferencia` whose *counterpart* is checking adds it
+      // back (money arriving there, e.g. a resgate da reserva), regardless
+      // of the source account's type. A transferencia has no column of its
+      // own: it's neither spending nor saving.
       const isCheckingPrimary = accountTypeById.get(t.accountId) === "checking";
       const isCheckingCounterpart = t.counterpartAccountId != null && accountTypeById.get(t.counterpartAccountId) === "checking";
 
@@ -233,7 +235,7 @@ export async function getDailyBalance(
         if (t.type === "entrada") deltas[dayIndex] = deltas[dayIndex].plus(amount);
         else deltas[dayIndex] = deltas[dayIndex].minus(amount);
       }
-      if (isCheckingCounterpart && t.type === "economia") {
+      if (isCheckingCounterpart && (t.type === "economia" || t.type === "transferencia")) {
         deltas[dayIndex] = deltas[dayIndex].plus(amount);
       }
     }
@@ -395,7 +397,7 @@ export async function getDailyBalance(
 
 export interface DayDetailItem {
   id: string;
-  type: "entrada" | "saida" | "diario" | "economia" | "cartao";
+  type: "entrada" | "saida" | "diario" | "economia" | "transferencia" | "cartao";
   description: string;
   date: string;
   amount: string;

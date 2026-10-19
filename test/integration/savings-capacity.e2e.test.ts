@@ -78,8 +78,9 @@ describe("insights: quanto dá para guardar", () => {
 
   it("counts savings already made and uses the user's own goal", async () => {
     const { auth, tx } = await setup("20000.00");
+    const reserve = await request(app).post("/accounts").set(auth).send({ name: "Reserva", type: "savings_reserve" }).expect(201);
     await tx("entrada", "5000.00", day(5));
-    await tx("economia", "400.00", day(6));
+    await tx("economia", "400.00", day(6), { counterpartAccountId: reserve.body.id });
     await request(app)
       .post("/savings-goals")
       .set(auth)

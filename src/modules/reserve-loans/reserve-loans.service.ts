@@ -9,8 +9,13 @@ export interface CreateLoanInput {
   destinationAccountId: string;
   principal: string;
   borrowDate: Date;
+  /** % ao mês, always > 0 (validated by the route). */
+  monthlyInterestRate?: number;
   description?: string;
 }
+
+/** Borrowing from the reserve is never free — it's how the app nudges the money back in. */
+export const DEFAULT_MONTHLY_INTEREST_RATE = 10;
 
 export interface CreateRepaymentInput {
   repaymentDate: Date;
@@ -82,6 +87,7 @@ export async function createLoan(userId: string, input: CreateLoanInput) {
       destinationAccountId: destinationAccount.id,
       principal: input.principal,
       borrowDate: input.borrowDate,
+      monthlyInterestRate: input.monthlyInterestRate ?? DEFAULT_MONTHLY_INTEREST_RATE,
       description: input.description,
     },
   });

@@ -80,9 +80,9 @@ export async function deleteAccount(userId: string, accountId: string) {
 
 /**
  * Balance = initial balance, plus `entrada` transactions on this account, minus
- * `saida`/`diario`/`economia` transactions on this account, plus `economia`
- * transfers where this account is the *counterpart* (money arriving via a
- * transfer-to-reserve, see RF-14), minus every card installment whose
+ * `saida`/`diario`/`economia`/`transferencia` transactions on this account,
+ * plus `economia`/`transferencia` where this account is the *counterpart*
+ * (money arriving via a transfer between the user's own accounts), minus every card installment whose
  * *due date* has passed and whose card's default payment account is this one
  * (RF-12: the purchase itself never touches the bank balance — the bill
  * debits automatically, in full, on the due date; there's no separate manual
@@ -132,11 +132,11 @@ export async function getAccountBalance(userId: string, accountId: string, asOfD
     }),
     prisma.transaction.aggregate({
       _sum: { amount: true },
-      where: { accountId, type: { in: ["saida", "diario", "economia"] }, ...dateFilter },
+      where: { accountId, type: { in: ["saida", "diario", "economia", "transferencia"] }, ...dateFilter },
     }),
     prisma.transaction.aggregate({
       _sum: { amount: true },
-      where: { counterpartAccountId: accountId, type: "economia", ...dateFilter },
+      where: { counterpartAccountId: accountId, type: { in: ["economia", "transferencia"] }, ...dateFilter },
     }),
     prisma.installment.aggregate({
       _sum: { amount: true },

@@ -10,7 +10,7 @@ export const recurringTransactionsRouter = Router();
 const createRecurringTransactionSchema = z
   .object({
     accountId: z.string().uuid(),
-    type: z.enum(["entrada", "saida", "diario", "economia"]),
+    type: z.enum(["entrada", "saida", "diario", "economia", "transferencia"]),
     amount: z.string(),
     startDate: z.string(),
     interval: z.enum(["daily", "weekly", "biweekly", "monthly", "annual"]),

@@ -7,7 +7,7 @@ import * as transactionsService from "./transactions.service.js";
 
 export const transactionsRouter = Router();
 
-const transactionTypeSchema = z.enum(["entrada", "saida", "diario", "economia"]);
+const transactionTypeSchema = z.enum(["entrada", "saida", "diario", "economia", "transferencia"]);
 
 const createTransactionSchema = z.object({
   accountId: z.string().uuid(),

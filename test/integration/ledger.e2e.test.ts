@@ -126,7 +126,59 @@ describe("ledger (accounts, transactions, reports)", () => {
     expect(res.status).toBe(400);
   });
 
-  it("daily-balance's saldo nets a transfer between two checking accounts to zero", async () => {
+  it("economia needs a reserva or investimento destination, so the money never leaves the patrimônio", async () => {
+    const { token } = await createTestUser();
+    const checking = await createAccount(token, { name: "Conta", type: "checking", initialBalance: "1000.00" });
+    const other = await createAccount(token, { name: "Outra", type: "checking" });
+    const investment = await createAccount(token, { name: "Corretora", type: "investment" });
+    const send = (body: Record<string, unknown>) =>
+      request(app)
+        .post("/transactions")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ accountId: checking.id, amount: "100.00", date: "2026-01-10", ...body });
+
+    expect((await send({ type: "economia" })).status).toBe(400); // no destination
+    expect((await send({ type: "economia", counterpartAccountId: other.id })).status).toBe(400); // not a saving
+    expect((await send({ type: "transferencia" })).status).toBe(400);
+    await send({ type: "economia", counterpartAccountId: investment.id }).expect(201); // aporte
+
+    const balance = await request(app)
+      .get(`/accounts/${investment.id}/balance`)
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+    expect(balance.body.balance).toBe("100.00");
+  });
+
+  it("a resgate da reserva (transferencia) refills the checking saldo without counting as economia or cost", async () => {
+    const { token } = await createTestUser();
+    const checking = await createAccount(token, { name: "Conta", type: "checking", initialBalance: "1000.00" });
+    const reserve = await createAccount(token, { name: "Reserva", type: "savings_reserve", initialBalance: "500.00" });
+    const { year, month } = futureYearMonth(1);
+    const mm = String(month).padStart(2, "0");
+
+    await request(app)
+      .post("/transactions")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ accountId: reserve.id, counterpartAccountId: checking.id, type: "transferencia", amount: "300.00", date: `${year}-${mm}-10` })
+      .expect(201);
+
+    const days = await request(app)
+      .get(`/reports/daily-balance?year=${year}&month=${month}`)
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+    const day10 = days.body.find((d: { day: number }) => d.day === 10);
+    expect(day10.saldo).toBe("1300.00");
+    expect(day10.economia).toBe("0.00");
+
+    const totals = await request(app)
+      .get(`/reports/monthly-totals?year=${year}&month=${month}`)
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+    expect(totals.body.economia).toBe("0.00");
+    expect(totals.body.saidas).toBe("0.00");
+  });
+
+  it("daily-balance's saldo nets a transferencia between two checking accounts to zero", async () => {
     const { token } = await createTestUser();
     const checkingA = await createAccount(token, { name: "Conta A", type: "checking", initialBalance: "1000.00" });
     const checkingB = await createAccount(token, { name: "Conta B", type: "checking" });
@@ -138,7 +190,7 @@ describe("ledger (accounts, transactions, reports)", () => {
       .send({
         accountId: checkingA.id,
         counterpartAccountId: checkingB.id,
-        type: "economia",
+        type: "transferencia",
         amount: "150.00",
         date: `${year}-${String(month).padStart(2, "0")}-10`,
       })
@@ -152,7 +204,7 @@ describe("ledger (accounts, transactions, reports)", () => {
     const day10 = res.body.find((d: { day: number }) => d.day === 10);
     const day9 = res.body.find((d: { day: number }) => d.day === 9);
 
-    expect(day10.economia).toBe("150.00");
+    expect(day10.economia).toBe("0.00"); // a transferencia is not saving
     expect(day10.saldo).toBe(day9.saldo); // moved within the checking pool, saldo unchanged
     expect(day10.saldo).toBe("1000.00");
   });
@@ -215,6 +267,7 @@ describe("ledger (accounts, transactions, reports)", () => {
   it("monthly-totals computes performance, custo de vida and economizado percent", async () => {
     const { token } = await createTestUser();
     const account = await createAccount(token, { name: "Conta", type: "checking" });
+    const reserve = await createAccount(token, { name: "Reserva", type: "savings_reserve" });
 
     await request(app)
       .post("/transactions")
@@ -229,7 +282,7 @@ describe("ledger (accounts, transactions, reports)", () => {
     await request(app)
       .post("/transactions")
       .set("Authorization", `Bearer ${token}`)
-      .send({ accountId: account.id, type: "economia", amount: "200.00", date: "2026-05-03" })
+      .send({ accountId: account.id, counterpartAccountId: reserve.id, type: "economia", amount: "200.00", date: "2026-05-03" })
       .expect(201);
 
     const res = await request(app)
