@@ -538,11 +538,20 @@ export async function getDayDetail(userId: string, date: Date, toInclusive: Date
 /**
  * Custo de vida puro: only what was spent — saídas + diário + cartão.
  * Economia is money kept (it moved to a reserva/investimento), never cost;
- * a transferencia isn't either. Used for the month's totals and to size the
+ * a transferencia isn't either, nor a saída that bought a bem (`aquisicoes`:
+ * it became patrimônio). Used for the month's totals and to size the
  * emergency reserve, so both always agree.
  */
-export function costOfLiving(totals: { saidas: Prisma.Decimal.Value; diario: Prisma.Decimal.Value; cartao: Prisma.Decimal.Value }) {
-  return new Prisma.Decimal(totals.saidas).plus(totals.diario).plus(totals.cartao);
+export function costOfLiving(totals: {
+  saidas: Prisma.Decimal.Value;
+  diario: Prisma.Decimal.Value;
+  cartao: Prisma.Decimal.Value;
+  aquisicoes?: Prisma.Decimal.Value;
+}) {
+  return new Prisma.Decimal(totals.saidas)
+    .minus(totals.aquisicoes ?? 0)
+    .plus(totals.diario)
+    .plus(totals.cartao);
 }
 
 export interface MonthlyTotals {
@@ -551,6 +560,8 @@ export interface MonthlyTotals {
   diario: string;
   economia: string;
   cartao: string;
+  /** Saídas that bought a bem (part of `saidas`, never custo de vida). */
+  aquisicoes: string;
   performance: string;
   custoDeVida: string;
   rendaExcedeCustoDeVida: boolean;
@@ -577,11 +588,15 @@ export async function getMonthlyTotals(userId: string, year: number, month: numb
   let diario = ZERO;
   let economia = ZERO;
   let cartao = ZERO;
+  let aquisicoes = ZERO;
 
   for (const t of transactions) {
     const amount = new Prisma.Decimal(t.amount);
     if (t.type === "entrada") entradas = entradas.plus(amount);
-    else if (t.type === "saida") saidas = saidas.plus(amount);
+    else if (t.type === "saida") {
+      saidas = saidas.plus(amount);
+      if (t.assetId) aquisicoes = aquisicoes.plus(amount);
+    }
     else if (t.type === "diario") diario = diario.plus(amount);
     else if (t.type === "economia") economia = economia.plus(amount);
   }
@@ -590,7 +605,7 @@ export async function getMonthlyTotals(userId: string, year: number, month: numb
   }
 
   const performance = entradas.minus(saidas).minus(diario).minus(economia).minus(cartao);
-  const custoDeVida = costOfLiving({ saidas, diario, cartao });
+  const custoDeVida = costOfLiving({ saidas, diario, cartao, aquisicoes });
   const economizadoPercent = entradas.isZero() ? ZERO : economia.dividedBy(entradas).times(100);
 
   const today = new Date();
@@ -606,6 +621,7 @@ export async function getMonthlyTotals(userId: string, year: number, month: numb
     diario: diario.toFixed(2),
     economia: economia.toFixed(2),
     cartao: cartao.toFixed(2),
+    aquisicoes: aquisicoes.toFixed(2),
     performance: performance.toFixed(2),
     custoDeVida: custoDeVida.toFixed(2),
     rendaExcedeCustoDeVida: entradas.greaterThanOrEqualTo(custoDeVida),
@@ -639,6 +655,7 @@ export async function getCategoryBreakdown(userId: string, year: number, month: 
         date: { gte: monthStart, lt: monthEnd },
         type: { in: ["saida", "diario", "economia"] },
         categoryId: { not: null },
+        assetId: null, // buying a bem isn't spending in any tag
       },
       include: { category: true },
     }),

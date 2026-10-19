@@ -17,6 +17,8 @@ const createTransactionSchema = z.object({
   categoryId: z.string().uuid().optional(),
   description: z.string().optional(),
   counterpartAccountId: z.string().uuid().optional(),
+  /** A saída that bought this bem (entrada, ITBI, documentação) — never custo de vida. */
+  assetId: z.string().uuid().nullable().optional(),
 });
 
 transactionsRouter.get(

@@ -4,6 +4,7 @@ import { asyncHandler } from "../../core/http/async-handler.js";
 import { requireUserId } from "../../core/http/auth-guard.js";
 import { parseDateParam } from "../../core/http/date.js";
 import { AppError } from "../../core/http/errors.js";
+import { registerAssetPurchase, simulateAssetPurchase } from "./asset-purchase.service.js";
 import { simulatePurchase } from "./purchase-simulation.service.js";
 import { getSavingsCapacity } from "./savings-capacity.service.js";
 import { getSummary } from "./summary.service.js";
@@ -73,5 +74,58 @@ insightsRouter.post(
   "/what-if",
   asyncHandler(async (req, res) => {
     res.json(await whatIf(requireUserId(req), whatIfSchema.parse(req.body)));
+  })
+);
+
+const amount = z.string().regex(/^\d+(\.\d{1,2})?$/, "must be a non-negative amount like 1234.56");
+const assetPurchaseSchema = z.object({
+  description: z.string().trim().max(80).optional(),
+  assetKind: z.enum(["imovel", "veiculo", "outro"]),
+  producesIncome: z.boolean().optional(),
+  price: amount,
+  taxes: amount.optional(),
+  fees: amount.optional(),
+  downPayment: amount.optional(),
+  downPaymentAccountId: z.string().uuid(),
+  financing: z
+    .object({
+      installments: z.number().int().min(1).max(420),
+      installmentAmount: amount,
+      firstDueDate: z.string().optional(),
+      principal: amount.optional(),
+      installmentAccountId: z.string().uuid().optional(),
+    })
+    .optional(),
+});
+
+function parseAssetPurchase(body: unknown) {
+  const input = assetPurchaseSchema.parse(body);
+  return {
+    ...input,
+    financing: input.financing && {
+      ...input.financing,
+      firstDueDate: input.financing.firstDueDate ? parseDateParam(input.financing.firstDueDate, "firstDueDate") : undefined,
+    },
+  };
+}
+
+/**
+ * "Compra de bem" (imóvel, carro): real cost, how it's paid and the impact
+ * on the patrimônio (total, líquido, % líquido, reserve, division). Nothing
+ * is saved.
+ */
+insightsRouter.post(
+  "/asset-purchase",
+  asyncHandler(async (req, res) => {
+    res.json(await simulateAssetPurchase(requireUserId(req), parseAssetPurchase(req.body)));
+  })
+);
+
+/** Registers a simulated purchase: bem at total cost, entrada, financing debt and its installments. */
+insightsRouter.post(
+  "/asset-purchase/register",
+  asyncHandler(async (req, res) => {
+    const name = z.string().trim().min(1).max(80).parse(req.body?.name);
+    res.status(201).json(await registerAssetPurchase(requireUserId(req), { ...parseAssetPurchase(req.body), name }));
   })
 );

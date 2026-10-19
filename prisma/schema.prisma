@@ -160,6 +160,10 @@ model Transaction {
   occurrenceIndex        Int?                  @map("occurrence_index")
   // Visual "já paguei" check only — never read by any balance calculation.
   paidAt                 DateTime?             @map("paid_at")
+  // A saída that bought this bem (entrada, impostos, documentação): money
+  // that became patrimônio, so it's never custo de vida.
+  assetId                String?               @map("asset_id")
+  asset                  Asset?                @relation(fields: [assetId], references: [id], onDelete: SetNull)
   createdAt              DateTime              @default(now()) @map("created_at")
   updatedAt              DateTime              @updatedAt @map("updated_at")
 
@@ -665,8 +669,9 @@ model Asset {
   createdAt DateTime   @default(now()) @map("created_at")
   updatedAt DateTime   @updatedAt @map("updated_at")
 
-  valuations AssetValuation[]
-  debts      Debt[]
+  valuations   AssetValuation[]
+  debts        Debt[]
+  transactions Transaction[]
 
   @@map("assets")
 }

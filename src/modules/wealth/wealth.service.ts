@@ -7,6 +7,7 @@ import { costOfLiving, getMonthlyTotals } from "../reports/reports.service.js";
 import { computeLoanState } from "../reserve-loans/interest.js";
 import { getReserveTargetMonths } from "../settings/settings.service.js";
 import { getDebtOutstanding, isExpensiveDebt } from "./debt-outstanding.js";
+import { NET_WORTH_MIN_PERCENT } from "./wealth-rules.js";
 
 const ZERO = new Prisma.Decimal(0);
 const DAY_MS = 86_400_000;
@@ -297,8 +298,7 @@ export async function averageMonthlyResult(userId: string, today: Date) {
   return results.reduce((a, b) => a.plus(b), ZERO).dividedBy(results.length);
 }
 
-/** Método: patrimônio líquido under this share of the total is the warning light. */
-export const NET_WORTH_MIN_PERCENT = 40;
+export { NET_WORTH_MIN_PERCENT };
 
 const sumGroups = (groups: WealthGroup[]) => groups.reduce((s, g) => s.plus(g.total), ZERO);
 
@@ -363,6 +363,28 @@ export async function computeWealth(userId: string, asOf: Date) {
 /** Fits the snapshot column (Decimal 7,2): only absurd ratios (tiny assets, big debt) get capped. */
 export const snapshotPercent = (p: Prisma.Decimal | null) =>
   p == null ? null : Prisma.Decimal.min(99999, Prisma.Decimal.max(-99999, p)).toDecimalPlaces(2);
+
+/** A single item above this share of its bloco reads as concentrated. */
+export const CONCENTRATION_PERCENT = 70;
+
+/**
+ * Método R8, informative only (never a product recommendation): reserve or
+ * investments sitting mostly in one place, once the bloco is relevant (at
+ * least a month of custo de vida).
+ */
+function concentration(groups: WealthGroup[], custoMensal: Prisma.Decimal | null) {
+  if (!custoMensal || custoMensal.lessThanOrEqualTo(0)) return [];
+  const result: { bloco: string; item: string; percent: string }[] = [];
+  for (const g of groups) {
+    if (g.group !== "reserva" && g.group !== "investimentos") continue;
+    const total = new Prisma.Decimal(g.total);
+    if (total.lessThan(custoMensal) || total.lessThanOrEqualTo(0)) continue;
+    const top = g.items.reduce((a, b) => (new Prisma.Decimal(b.value).greaterThan(a.value) ? b : a));
+    const share = new Prisma.Decimal(top.value).dividedBy(total).times(100);
+    if (share.greaterThan(CONCENTRATION_PERCENT)) result.push({ bloco: g.group, item: top.name, percent: share.toFixed(0) });
+  }
+  return result;
+}
 
 const trendOf = (change: Prisma.Decimal | null) =>
   change == null
@@ -477,6 +499,8 @@ export async function getWealth(userId: string, now = new Date()) {
       dividaCara: w.expensiveDebt.toFixed(2),
       reserva: w.reserveTotal.toFixed(2),
       disponivelNegativo: w.disponivelTotal.lessThan(0),
+      /** Blocos mostly in one account/bem (método R8) — information, not advice. */
+      concentracao: concentration(w.assetGroups, avgCost),
     },
     staleCount: allItems.filter((i) => i.stale).length,
     assets: w.assetGroups,

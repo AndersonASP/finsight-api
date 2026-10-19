@@ -13,8 +13,9 @@ const mesOf = (index: number) => `${Math.floor(index / 12)}-${String((index % 12
  * Loads the real projection (Saldos + "dá para guardar") for months
  * `fromIndex`..`toIndex` (year * 12 + month0), capped at MAX_SIMULATED_MONTHS
  * from the current month, plus what decides how strict the reserve guardian
- * is: the classic destination order (expensive debt → 6-month reserve →
- * invest) — anything but "investir" means the reserve still comes first.
+ * is: the método's destination order (reserve up to the user's target →
+ * expensive debt → invest) — anything but "investir" means the reserve (or
+ * the debt) still comes first.
  */
 export async function loadBaseline(userId: string, fromIndex: number, toIndex: number) {
   const today = startOfUtcDay(new Date());

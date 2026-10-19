@@ -11,6 +11,7 @@ export interface TransactionInput {
   categoryId?: string;
   description?: string;
   counterpartAccountId?: string;
+  assetId?: string | null;
 }
 
 /** Exported so recurring-transactions.service.ts can reuse the same account/transfer rules without duplicating them. */
@@ -37,6 +38,13 @@ export async function validateAccounts(
   if (input.type === "economia" && !SAVINGS_DESTINATIONS.includes(destination.type)) {
     throw AppError.badRequest("economia must go to a reserva or investimento account — use 'transferencia' for other moves");
   }
+}
+
+async function validateAsset(userId: string, input: { type: TransactionType; assetId?: string | null }) {
+  if (!input.assetId) return;
+  if (input.type !== "saida") throw AppError.badRequest("assetId is only valid on a saída (the money that bought the bem)");
+  const asset = await prisma.asset.findUnique({ where: { id: input.assetId } });
+  if (!asset || asset.userId !== userId) throw AppError.badRequest("assetId must be one of your bens");
 }
 
 /** Types that move money between two of the user's own accounts. */
@@ -86,6 +94,7 @@ export async function listTransactions(userId: string, filter: ListTransactionsF
 
 export async function createTransaction(userId: string, input: TransactionInput) {
   await validateAccounts(userId, input);
+  await validateAsset(userId, input);
   return prisma.transaction.create({
     data: {
       userId,
@@ -96,6 +105,7 @@ export async function createTransaction(userId: string, input: TransactionInput)
       categoryId: input.categoryId,
       description: input.description,
       date: input.date,
+      assetId: input.assetId ?? undefined,
     },
   });
 }
@@ -128,11 +138,14 @@ export async function updateTransaction(
         ? input.counterpartAccountId
         : (existing.counterpartAccountId ?? undefined),
   };
+  merged.assetId = input.assetId !== undefined ? input.assetId : existing.assetId;
+  if (merged.type !== "saida" && input.assetId === undefined) merged.assetId = null;
   // Turning a transfer into a plain lançamento drops its destination.
   if (input.counterpartAccountId === undefined && !TRANSFER_TYPES.includes(merged.type)) {
     merged.counterpartAccountId = undefined;
   }
   await validateAccounts(userId, merged);
+  await validateAsset(userId, merged);
 
   const data = {
     accountId: merged.accountId,
@@ -142,6 +155,7 @@ export async function updateTransaction(
     categoryId: merged.categoryId ?? null,
     description: merged.description,
     date: merged.date,
+    assetId: merged.assetId ?? null,
   };
 
   if (scope !== "future" || !existing.recurringTransactionId || existing.occurrenceIndex == null) {
